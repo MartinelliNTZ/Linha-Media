@@ -35,8 +35,15 @@ from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
                        QgsProcessingParameterFeatureSource,
-                       QgsProcessingParameterFeatureSink)
-
+                       QgsProcessingParameterFeatureSink,
+                       QgsProcessingParameterNumber,
+                       QgsProcessingException,
+                       QgsGeometry,
+                       QgsFeature,
+                       QgsWkbTypes,
+                       QgsCoordinateTransform,
+                       QgsCoordinateReferenceSystem,
+                       QgsPointXY)
 
 class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     """
@@ -58,20 +65,35 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
 
     OUTPUT = 'OUTPUT'
     INPUT = 'INPUT'
+    INPUT_2 = 'INPUT_2'
+    PARTICOES = 'PARTICOES'
 
     def initAlgorithm(self, config):
-        """
-        Here we define the inputs and output of the algorithm, along
-        with some other properties.
-        """
-
-        # We add the input vector features source. It can have any kind of
-        # geometry.
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 self.INPUT,
-                self.tr('Input layer'),
-                [QgsProcessing.TypeVectorAnyGeometry]
+                self.tr('Primeira Camada (ou camada com as 2 linhas)'),
+                [QgsProcessing.TypeVectorLine]
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterFeatureSource(
+                self.INPUT_2,
+                self.tr('Segunda Camada (Opcional - para 1 feição cada)'),
+                [QgsProcessing.TypeVectorLine],
+                optional=True
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.PARTICOES,
+                self.tr('Número de Partiçôes'),
+                type=QgsProcessingParameterNumber.Integer,
+                minValue=10,
+                maxValue=999999,
+                defaultValue=1000
             )
         )
 
@@ -81,82 +103,124 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT,
-                self.tr('Output layer')
+                self.tr('Linha Mestra')
             )
         )
 
     def processAlgorithm(self, parameters, context, feedback):
-        """
-        Here is where the processing itself takes place.
-        """
-
-        # Retrieve the feature source and sink. The 'dest_id' variable is used
-        # to uniquely identify the feature sink, and must be included in the
-        # dictionary returned by the processAlgorithm function.
         source = self.parameterAsSource(parameters, self.INPUT, context)
-        (sink, dest_id) = self.parameterAsSink(parameters, self.OUTPUT,
-                context, source.fields(), source.wkbType(), source.sourceCrs())
+        source2 = self.parameterAsSource(parameters, self.INPUT_2, context)
+        particoes = self.parameterAsInt(parameters, self.PARTICOES, context)
 
-        # Compute the number of steps to display within the progress bar and
-        # get features from source
-        total = 100.0 / source.featureCount() if source.featureCount() else 0
-        features = source.getFeatures()
+        feicoes_camada1 = list(source.getFeatures())
+        linha1 = None
+        linha2 = None
 
-        for current, feature in enumerate(features):
-            # Stop the algorithm if cancel button has been clicked
+        # Validação de Cenários
+        if source2 is None:
+            # Cenário 1: Duas feições na mesma camada
+            if len(feicoes_camada1) != 2:
+                raise QgsProcessingException(self.tr('Selecione exatamente 2 feições na camada de entrada.'))
+            linha1 = feicoes_camada1[0]
+            linha2 = feicoes_camada1[1]
+            crs_final = source.sourceCrs()
+        else:
+            # Cenário 2: Uma feição em cada camada
+            feicoes_camada2 = list(source2.getFeatures())
+            if len(feicoes_camada1) != 1 or len(feicoes_camada2) != 1:
+                raise QgsProcessingException(self.tr('Selecione exatamente 1 feição em cada camada.'))
+            
+            linha1 = feicoes_camada1[0]
+            linha2 = feicoes_camada2[0]
+            crs_final = source.sourceCrs()
+
+            # Garantir mesma projeção
+            if source.sourceCrs() != source2.sourceCrs():
+                feedback.pushInfo(self.tr('Reprojetando segunda camada para a projeção da primeira...'))
+                transform = QgsCoordinateTransform(source2.sourceCrs(), source.sourceCrs(), context.transformContext())
+                geom2 = linha2.geometry()
+                geom2.transform(transform)
+                linha2.setGeometry(geom2)
+
+        def orientar_noroeste(geom):
+            """Inverte a linha se o final for mais ao Norte/Oeste que o início."""
+            polyline = geom.asPolyline()
+            if not polyline:
+                return geom
+            
+            inicio = polyline[0]
+            fim = polyline[-1]
+
+            # Critério NO: Menor X (Oeste), se empate, maior Y (Norte)
+            def score_no(pt):
+                return (pt.x(), -pt.y())
+
+            if score_no(fim) < score_no(inicio):
+                feedback.pushInfo(self.tr('Invertendo direção da linha para alinhar ao Noroeste.'))
+                points = list(polyline)
+                points.reverse()
+                return QgsGeometry.fromPolylineXY(points)
+            return geom
+
+        geom1 = orientar_noroeste(linha1.geometry())
+        geom2 = orientar_noroeste(linha2.geometry())
+
+        # Gerar vértices fatiados
+        len1 = geom1.length()
+        len2 = geom2.length()
+        
+        vertices_linha_mestra = []
+
+        for i in range(particoes + 1):
             if feedback.isCanceled():
                 break
+            
+            dist1 = (len1 / particoes) * i
+            dist2 = (len2 / particoes) * i
 
-            # Add a feature in the sink
-            sink.addFeature(feature, QgsFeatureSink.FastInsert)
+            p1 = geom1.interpolate(dist1).asPoint()
+            p2 = geom2.interpolate(dist2).asPoint()
 
-            # Update the progress bar
-            feedback.setProgress(int(current * total))
+            # Centroide do segmento entre os dois vértices correspondentes
+            centro_x = (p1.x() + p2.x()) / 2
+            centro_y = (p1.y() + p2.y()) / 2
+            vertices_linha_mestra.append(QgsPointXY(centro_x, centro_y))
+            
+            feedback.setProgress(int((i / particoes) * 100))
 
-        # Return the results of the algorithm. In this case our only result is
-        # the feature sink which contains the processed features, but some
-        # algorithms may return multiple feature sinks, calculated numeric
-        # statistics, etc. These should all be included in the returned
-        # dictionary, with keys matching the feature corresponding parameter
-        # or output names.
+        # Criar a geometria da Linha Mestra
+        res_geom = QgsGeometry.fromPolylineXY(vertices_linha_mestra)
+        
+        (sink, dest_id) = self.parameterAsSink(
+            parameters, 
+            self.OUTPUT,
+            context, 
+            source.fields(), 
+            QgsWkbTypes.LineString, 
+            crs_final
+        )
+
+        new_feat = QgsFeature()
+        new_feat.setGeometry(res_geom)
+        new_feat.setFields(source.fields())
+        sink.addFeature(new_feat, QgsFeatureSink.FastInsert)
+
         return {self.OUTPUT: dest_id}
 
     def name(self):
-        """
-        Returns the algorithm name, used for identifying the algorithm. This
-        string should be fixed for the algorithm, and must not be localised.
-        The name should be unique within each provider. Names should contain
-        lowercase alphanumeric characters only and no spaces or other
-        formatting characters.
-        """
-        return 'LinhaMestra'
+        return 'linhamestra_gerador'
 
     def displayName(self):
-        """
-        Returns the translated algorithm name, which should be used for any
-        user-visible display of the algorithm name.
-        """
-        return self.tr(self.name())
+        return self.tr('Gerador de Linha Mestra')
 
     def group(self):
-        """
-        Returns the name of the group this algorithm belongs to. This string
-        should be localised.
-        """
-        return self.tr(self.groupId())
+        return self.tr('Linha Mestra')
 
     def groupId(self):
-        """
-        Returns the unique ID of the group this algorithm belongs to. This
-        string should be fixed for the algorithm, and must not be localised.
-        The group id should be unique within each provider. Group id should
-        contain lowercase alphanumeric characters only and no spaces or other
-        formatting characters.
-        """
-        return 'Vector'
+        return 'linhamestra'
 
     def tr(self, string):
-        return QCoreApplication.translate('Processing', string)
+        return QCoreApplication.translate('LinhaMestraAlgorithm', string)
 
     def createInstance(self):
         return LinhaMestraAlgorithm()
