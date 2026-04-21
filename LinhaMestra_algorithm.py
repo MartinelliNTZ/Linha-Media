@@ -68,6 +68,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     OUTPUT = 'OUTPUT'
     INPUT = 'INPUT'
     INPUT_2 = 'INPUT_2'
+    INTERMEDIATE_LINES_OUTPUT = 'INTERMEDIATE_LINES_OUTPUT'
     PARTICOES = 'PARTICOES'
 
     def initAlgorithm(self, config):
@@ -105,7 +106,16 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT,
-                self.tr('Linha Mestra')
+                self.tr('Linha Mestra'),
+                QgsProcessing.TypeVectorLine
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.INTERMEDIATE_LINES_OUTPUT,
+                self.tr('Linhas Intermediárias (Conexões)'),
+                QgsProcessing.TypeVectorLine
             )
         )
 
@@ -171,52 +181,90 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         len1 = geom1.length()
         len2 = geom2.length()
         
-        vertices_linha_mestra = []
+        # Otimização: Coletamos todos os pontos necessários em um único passo
+        dados_particao = []
 
         for i in range(particoes + 1):
             if feedback.isCanceled():
                 break
             
-            dist1 = (len1 / particoes) * i
-            dist2 = (len2 / particoes) * i
+            d1 = (len1 / particoes) * i
+            d2 = (len2 / particoes) * i
 
-            p1 = geom1.interpolate(dist1).asPoint()
-            p2 = geom2.interpolate(dist2).asPoint()
+            g1 = geom1.interpolate(d1)
+            g2 = geom2.interpolate(d2)
 
-            # Centroide do segmento entre os dois vértices correspondentes
-            centro_x = (p1.x() + p2.x()) / 2
-            centro_y = (p1.y() + p2.y()) / 2
-            vertices_linha_mestra.append(QgsPointXY(centro_x, centro_y))
+            if g1.isNull() or g2.isNull():
+                continue
+
+            p1 = g1.asPoint()
+            p2 = g2.asPoint()
+            dist_mae = p1.distance(p2)
+            centro = QgsPointXY((p1.x() + p2.x()) / 2, (p1.y() + p2.y()) / 2)
             
-            feedback.setProgress(int((i / particoes) * 100))
+            dados_particao.append({
+                'p1': p1,
+                'p2': p2,
+                'centro': centro,
+                'dist': dist_mae
+            })
+            
+            feedback.setProgress(int((i / (particoes + 1)) * 50))
 
         # Definir os campos de saída (ID do segmento)
-        fields = QgsFields()
-        fields.append(QgsField('id_segmento', QVariant.Int))
+        fields_mestra = QgsFields()
+        fields_mestra.append(QgsField('id_segmento', QVariant.Int))
+        fields_mestra.append(QgsField('dist_mae', QVariant.Double))
         
         (sink, dest_id) = self.parameterAsSink(
             parameters, 
             self.OUTPUT,
             context, 
-            fields, 
+            fields_mestra, 
             QgsWkbTypes.LineString, 
+            crs_final # CRS da primeira camada
+        )
+
+        # Configurar o sink para as linhas intermediárias
+        fields_intermediate = QgsFields()
+        fields_intermediate.append(QgsField('id_conexao', QVariant.Int))
+        (sink_intermediate, dest_id_intermediate) = self.parameterAsSink(
+            parameters,
+            self.INTERMEDIATE_LINES_OUTPUT,
+            context,
+            fields_intermediate,
+            QgsWkbTypes.LineString,
             crs_final
         )
 
         # Criar as feições para cada pedaço (segmento)
-        for i in range(len(vertices_linha_mestra) - 1):
+        total_pontos = len(dados_particao)
+        for i in range(total_pontos):
             if feedback.isCanceled():
                 break
             
-            # Cria um segmento entre o vértice atual e o próximo
-            seg_geom = QgsGeometry.fromPolylineXY([vertices_linha_mestra[i], vertices_linha_mestra[i+1]])
-            
-            new_feat = QgsFeature(fields)
-            new_feat.setGeometry(seg_geom)
-            new_feat.setAttribute('id_segmento', i + 1)
-            sink.addFeature(new_feat, QgsFeatureSink.FastInsert)
+            item = dados_particao[i]
 
-        return {self.OUTPUT: dest_id}
+            # 1. Gerar Segmento da Linha Mestra (conecta o centroide atual ao próximo)
+            if i < total_pontos - 1:
+                proximo = dados_particao[i+1]
+                geom_mestra = QgsGeometry.fromPolylineXY([item['centro'], proximo['centro']])
+                feat_mestra = QgsFeature(fields_mestra)
+                feat_mestra.setGeometry(geom_mestra)
+                feat_mestra.setAttribute('id_segmento', i + 1)
+                feat_mestra.setAttribute('dist_mae', item['dist'])
+                sink.addFeature(feat_mestra, QgsFeatureSink.FastInsert)
+
+            # 2. Gerar Linha de Conexão (Travessa transversal entre as linhas originais)
+            geom_conn = QgsGeometry.fromPolylineXY([item['p1'], item['p2']])
+            feat_conn = QgsFeature(fields_intermediate)
+            feat_conn.setGeometry(geom_conn)
+            feat_conn.setAttribute('id_conexao', i + 1)
+            sink_intermediate.addFeature(feat_conn, QgsFeatureSink.FastInsert)
+            
+            feedback.setProgress(50 + int((i / total_pontos) * 50))
+
+        return {self.OUTPUT: dest_id, self.INTERMEDIATE_LINES_OUTPUT: dest_id_intermediate}
 
     def name(self):
         return 'linhamestra_gerador'
