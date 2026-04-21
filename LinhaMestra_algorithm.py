@@ -30,7 +30,7 @@ __copyright__ = '(C) 2026 by Iridium'
 
 __revision__ = '$Format:%H$'
 
-from qgis.PyQt.QtCore import QCoreApplication
+from qgis.PyQt.QtCore import QCoreApplication, QVariant
 from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
@@ -43,7 +43,9 @@ from qgis.core import (QgsProcessing,
                        QgsWkbTypes,
                        QgsCoordinateTransform,
                        QgsCoordinateReferenceSystem,
-                       QgsPointXY)
+                       QgsPointXY,
+                       QgsFields,
+                       QgsField)
 
 class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     """
@@ -188,22 +190,31 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             
             feedback.setProgress(int((i / particoes) * 100))
 
-        # Criar a geometria da Linha Mestra
-        res_geom = QgsGeometry.fromPolylineXY(vertices_linha_mestra)
+        # Definir os campos de saída (ID do segmento)
+        fields = QgsFields()
+        fields.append(QgsField('id_segmento', QVariant.Int))
         
         (sink, dest_id) = self.parameterAsSink(
             parameters, 
             self.OUTPUT,
             context, 
-            source.fields(), 
+            fields, 
             QgsWkbTypes.LineString, 
             crs_final
         )
 
-        new_feat = QgsFeature()
-        new_feat.setGeometry(res_geom)
-        new_feat.setFields(source.fields())
-        sink.addFeature(new_feat, QgsFeatureSink.FastInsert)
+        # Criar as feições para cada pedaço (segmento)
+        for i in range(len(vertices_linha_mestra) - 1):
+            if feedback.isCanceled():
+                break
+            
+            # Cria um segmento entre o vértice atual e o próximo
+            seg_geom = QgsGeometry.fromPolylineXY([vertices_linha_mestra[i], vertices_linha_mestra[i+1]])
+            
+            new_feat = QgsFeature(fields)
+            new_feat.setGeometry(seg_geom)
+            new_feat.setAttribute('id_segmento', i + 1)
+            sink.addFeature(new_feat, QgsFeatureSink.FastInsert)
 
         return {self.OUTPUT: dest_id}
 
