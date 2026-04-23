@@ -107,23 +107,28 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
         # ETAPA 1 - Classificação e Cálculo de Azimute Médio
         for feat in features:
             geom = feat.geometry()
-            polyline = geom.asPolyline()
             
-            if not polyline:
+            # Trata tanto LineString quanto MultiLineString
+            parts = geom.asMultiPolyline() if geom.isMultipart() else [geom.asPolyline()]
+            
+            # Explode a linha em segmentos de todas as partes existentes
+            segment_azs = []
+            for part in parts:
+                if not part: continue
+                for i in range(len(part) - 1):
+                    segment_azs.append(part[i].azimuth(part[i+1]))
+            
+            if not segment_azs:
                 continue
 
             is_straight = True
             avg_az = 0
             
-            if len(polyline) == 2:
+            # Se tem apenas 1 segmento (2 vértices), é obrigatoriamente reta
+            if len(segment_azs) == 1:
                 is_straight = True
-                avg_az = polyline[0].azimuth(polyline[1])
+                avg_az = segment_azs[0]
             else:
-                # Explode a linha e calcula azimutes de cada segmento
-                segment_azs = []
-                for i in range(len(polyline) - 1):
-                    segment_azs.append(polyline[i].azimuth(polyline[i+1]))
-                
                 avg_az = sum(segment_azs) / len(segment_azs)
                 
                 # Verifica se o azimute médio passa do desvio aceitável
@@ -169,7 +174,7 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
 
         # ETAPA 2 - Numeração por Grupo
         visited = set()
-        group_id_counter = 1
+        all_groups = []
         
         for i in range(len(line_data)):
             if line_data[i]['type'] == 'CURVA':
@@ -192,23 +197,30 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
                         visited.add(v)
                         queue.append(v)
             
-            # Ordenar linhas dentro do grupo pelo valor de projeção
-            group_items = []
+            # Para cada grupo, calculamos a projeção média para ordenar as passadas entre si
+            group_projections = []
             for idx in component:
                 d = line_data[idx]
                 rad = math.radians(d['azimuth'])
-                # valor = -x * sin(azimute) + y * cos(azimute)
-                proj_val = -d['centroid'].x() * math.sin(rad) + d['centroid'].y() * math.cos(rad)
-                group_items.append((idx, proj_val))
+                val = -d['centroid'].x() * math.sin(rad) + d['centroid'].y() * math.cos(rad)
+                group_projections.append((idx, val))
             
-            group_items.sort(key=lambda x: x[1])
-            
-            # Atribuir números sequenciais dentro do grupo
-            for seq, (idx, _) in enumerate(group_items, 1):
-                line_data[idx]['group'] = group_id_counter
-                line_data[idx]['num'] = seq
-            
-            group_id_counter += 1
+            avg_proj = sum(p[1] for p in group_projections) / len(group_projections)
+            all_groups.append({
+                'items': group_projections,
+                'avg_proj': avg_proj
+            })
+
+        # Ordenar os GRUPOS (passadas) espacialmente pelo valor de projeção
+        all_groups.sort(key=lambda g: g['avg_proj'])
+
+        # Atribuir pass_id e seq_num baseados na ordem espacial
+        for group_idx, group in enumerate(all_groups, 1):
+            # Ordenar segmentos dentro da mesma passada (se houver mais de um)
+            group['items'].sort(key=lambda x: x[1])
+            for seq, (line_idx, _) in enumerate(group['items'], 1):
+                line_data[line_idx]['group'] = group_idx
+                line_data[line_idx]['num'] = seq
 
         # Salvar feições processadas no sink de saída
         for d in line_data:
