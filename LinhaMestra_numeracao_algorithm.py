@@ -158,23 +158,33 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
             if len(segment_azs) == 1:
                 is_straight = True
                 avg_az = segment_azs[0]
+                feedback.pushInfo(f"Linha {feat.id()}: RETA (2 vértices, Az: {avg_az:.2f}°)")
             else:
                 avg_az = sum(segment_azs) / len(segment_azs)
+                max_dev = 0
                 
                 # Verifica se o azimute médio passa do desvio aceitável
                 for az in segment_azs:
                     diff = abs(az - avg_az)
                     if diff > 180: diff = 360 - diff
+                    max_dev = max(max_dev, diff)
                     if diff > desvio_tipo:
                         is_straight = False
-                        break
+                
+                tipo_str = "RETA" if is_straight else "CURVA"
+                feedback.pushInfo(f"Linha {feat.id()}: {tipo_str} (Média Az: {avg_az:.2f}°, Desvio Máx: {max_dev:.2f}°)")
             
+            # Armazenamos a geometria original para o centroide
+            centroid_pt = geom.centroid().asPoint()
+            if centroid_pt.isEmpty(): # Fallback para linhas sem centroide válido
+                centroid_pt = parts[0][0]
+
             line_data.append({
                 'feat': feat,
-                'id': len(line_data),
+                'fid': feat.id(),
                 'type': 'RETA' if is_straight else 'CURVA',
                 'azimuth': avg_az,
-                'centroid': geom.centroid().asPoint(),
+                'centroid': centroid_pt,
                 'grupo_id': 0,
                 'seq_num': 0
             })
@@ -239,33 +249,40 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
                             visited_pass.add(v); queue.append(v)
             grupos_direcionais.append(bloco)
 
+        feedback.pushInfo(f"Total de Grupos (Blocos) detectados: {len(grupos_direcionais)}")
+
         # ETAPA 2 — NUMERAR AS LINHAS PARA CADA GRUPO
         for g_idx, bloco in enumerate(grupos_direcionais, 1):
             rows_to_sort = []
+            
+            # IMPORTANTE: Para ordenar sem embaralhar, precisamos de um azimute de referência único para o grupo
+            grupo_az_ref = sum(passadas_unidas[p_idx]['az'] for p_idx in bloco) / len(bloco)
+            rad_ref = math.radians(grupo_az_ref)
+            
+            feedback.pushInfo(f"Processando Grupo {g_idx}: {len(bloco)} passadas, Azimute Ref: {grupo_az_ref:.2f}°")
+
             for pass_idx in bloco:
                 passada = passadas_unidas[pass_idx]
-                # Pega o primeiro segmento como referência para o azimute do cálculo de projeção
-                ref_idx = passada['indices'][0]
-                d_ref = line_data[ref_idx]
-                rad = math.radians(d_ref['azimuth'])
                 
-                # Valor médio de projeção da passada
+                # Valor médio de projeção da passada usando o azimute de referência do grupo
                 proj_vals = []
                 for idx in passada['indices']:
                     p = line_data[idx]['centroid']
-                    val = -p.x() * math.sin(rad) + p.y() * math.cos(rad)
+                    # Fórmula solicitada: valor = -x * sin(azimute) + y * cos(azimute)
+                    val = -p.x() * math.sin(rad_ref) + p.y() * math.cos(rad_ref)
                     proj_vals.append(val)
                 
                 avg_proj = sum(proj_vals) / len(proj_vals)
                 rows_to_sort.append({'pass_idx': pass_idx, 'proj': avg_proj})
 
-            # Ordenar todas as linhas do grupo pelo valor de projeção
+            # Ordenar passadas do grupo pelo valor de projeção espacial
             rows_to_sort.sort(key=lambda x: x['proj'])
             
             for seq, row_info in enumerate(rows_to_sort, 1):
                 for idx in passadas_unidas[row_info['pass_idx']]['indices']:
                     line_data[idx]['grupo_id'] = g_idx
                     line_data[idx]['seq_num'] = seq
+                    feedback.pushInfo(f" -> Feição {line_data[idx]['fid']}: Grupo {g_idx}, Seq {seq} (Proj: {row_info['proj']:.2f})")
 
         # Salvar feições processadas no sink de saída
         for d in line_data:
