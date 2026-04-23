@@ -25,21 +25,24 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingException,
+                       QgsProcessingParameterNumber,
                        QgsGeometry,
                        QgsFeature,
                        QgsWkbTypes,
                        QgsFields,
                        QgsField,
-                       QgsPointXY)
+                       QgsPointXY,
+                       QgsDistanceArea)
 
 class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
-    """
-    Algoritmo para numeração de linhas de soja seguindo critérios de
-    azimute e proximidade perpendicular.
-    """
 
     INPUT = 'INPUT'
     OUTPUT = 'OUTPUT'
+    
+    # Constantes solicitadas
+    DESVIO_TIPO = 'DESVIO_ACEITAVEL_TIPO'
+    DESVIO_SEQ = 'DESVIO_ACEITAVEL_SEQUENCIA'
+    TOL_GPS = 'TOLERANCIA_GPS'
 
     def tr(self, string):
         return QCoreApplication.translate('LinhaMestraNumeracaoAlgorithm', string)
@@ -69,6 +72,33 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
         )
 
         self.addParameter(
+            QgsProcessingParameterNumber(
+                self.DESVIO_TIPO,
+                self.tr('Desvio Aceitável Tipo (Graus)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=5.0
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.DESVIO_SEQ,
+                self.tr('Desvio Aceitável Sequência (Graus)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=2.0
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.TOL_GPS,
+                self.tr('Tolerância GPS (Metros)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=0.5
+            )
+        )
+
+        self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT,
                 self.tr('Linhas Numeradas'),
@@ -80,6 +110,10 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         if source is None:
             raise QgsProcessingException(self.invalidSourceError(parameters, self.INPUT))
+
+        desvio_tipo = self.parameterAsDouble(parameters, self.DESVIO_TIPO, context)
+        desvio_seq = self.parameterAsDouble(parameters, self.DESVIO_SEQ, context)
+        tol_gps = self.parameterAsDouble(parameters, self.TOL_GPS, context)
 
         # Configurar campos de saída
         fields = source.fields()
@@ -96,11 +130,6 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
             source.wkbType(), 
             source.sourceCrs()
         )
-
-        # Parâmetros de negócio definidos no requisito
-        DESVIO_ACEITAVEL_TIPO = 5.0
-        DESVIO_ACEITAVEL_SEQUENCIA = 2.0
-        TOLERANCIA_GPS = 0.5
 
         features = list(source.getFeatures())
         line_data = []
@@ -136,99 +165,114 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
                 for az in segment_azs:
                     diff = abs(az - avg_az)
                     if diff > 180: diff = 360 - diff
-                    if diff > DESVIO_ACEITAVEL_TIPO:
+                    if diff > desvio_tipo:
                         is_straight = False
                         break
             
             line_data.append({
                 'feat': feat,
+                'id': len(line_data),
                 'type': 'RETA' if is_straight else 'CURVA',
                 'azimuth': avg_az,
                 'centroid': geom.centroid().asPoint(),
-                'group': -1,
-                'num': 0
+                'grupo_id': 0,
+                'seq_num': 0
             })
 
-        # Agrupamento (Mesma Passada)
+        # ETAPA 1 — JUNTAR SEGMENTOS DA MESMA PASSADA
         adj = {i: [] for i in range(len(line_data))}
         for i in range(len(line_data)):
             if line_data[i]['type'] != 'RETA': continue
             for j in range(i + 1, len(line_data)):
                 if line_data[j]['type'] != 'RETA': continue
                 
-                # Diferença de azimute
                 az_diff = abs(line_data[i]['azimuth'] - line_data[j]['azimuth'])
                 if az_diff > 180: az_diff = 360 - az_diff
                 
-                if az_diff < DESVIO_ACEITAVEL_SEQUENCIA:
-                    # Distância perpendicular usando fórmula de projeção
+                if az_diff < desvio_seq:
                     p1 = line_data[i]['centroid']
                     p2 = line_data[j]['centroid']
                     rad = math.radians(line_data[i]['azimuth'])
-                    
                     v1 = -p1.x() * math.sin(rad) + p1.y() * math.cos(rad)
                     v2 = -p2.x() * math.sin(rad) + p2.y() * math.cos(rad)
                     
-                    if abs(v1 - v2) < TOLERANCIA_GPS:
+                    if abs(v1 - v2) < tol_gps:
                         adj[i].append(j)
                         adj[j].append(i)
 
-        # ETAPA 2 - Numeração por Grupo
+        # Identificar Passadas únicas (Unindo segmentos da Etapa 1)
+        passadas_unidas = []
         visited = set()
-        all_groups = []
-        
         for i in range(len(line_data)):
-            if line_data[i]['type'] == 'CURVA':
-                # SE LINHA CURVA 1 IMPLEMENTAR PASS
-                pass
-                continue
-                
-            if i in visited:
-                continue
-            
-            # Identificar Grupo (Passada) via BFS para fechar componentes
+            if i in visited or line_data[i]['type'] == 'CURVA': continue
             component = []
             queue = [i]
             visited.add(i)
             while queue:
                 u = queue.pop(0)
                 component.append(u)
-                for v in adj[u]:
-                    if v not in visited:
-                        visited.add(v)
-                        queue.append(v)
+                for v in adj[u]: 
+                    if v not in visited: 
+                        visited.add(v); queue.append(v)
             
-            # Para cada grupo, calculamos a projeção média para ordenar as passadas entre si
-            group_projections = []
-            for idx in component:
-                d = line_data[idx]
-                rad = math.radians(d['azimuth'])
-                val = -d['centroid'].x() * math.sin(rad) + d['centroid'].y() * math.cos(rad)
-                group_projections.append((idx, val))
+            # Tirar média de azimute da passada unida
+            pass_az = sum(line_data[idx]['azimuth'] for idx in component) / len(component)
+            passadas_unidas.append({'indices': component, 'az': pass_az})
+
+        # Dividir em GRUPOS (Blocos direcionais como Chapadão vs Bicos)
+        grupos_direcionais = []
+        visited_pass = set()
+        for i, p1 in enumerate(passadas_unidas):
+            if i in visited_pass: continue
+            bloco = []
+            queue = [i]
+            visited_pass.add(i)
+            while queue:
+                u = queue.pop(0)
+                bloco.append(u)
+                for v, p2 in enumerate(passadas_unidas):
+                    if v not in visited_pass:
+                        az_diff = abs(passadas_unidas[u]['az'] - p2['az'])
+                        if az_diff > 180: az_diff = 360 - az_diff
+                        # Se azimute for próximo, pertence ao mesmo bloco direcional
+                        if az_diff < desvio_tipo:
+                            visited_pass.add(v); queue.append(v)
+            grupos_direcionais.append(bloco)
+
+        # ETAPA 2 — NUMERAR AS LINHAS PARA CADA GRUPO
+        for g_idx, bloco in enumerate(grupos_direcionais, 1):
+            rows_to_sort = []
+            for pass_idx in bloco:
+                passada = passadas_unidas[pass_idx]
+                # Pega o primeiro segmento como referência para o azimute do cálculo de projeção
+                ref_idx = passada['indices'][0]
+                d_ref = line_data[ref_idx]
+                rad = math.radians(d_ref['azimuth'])
+                
+                # Valor médio de projeção da passada
+                proj_vals = []
+                for idx in passada['indices']:
+                    p = line_data[idx]['centroid']
+                    val = -p.x() * math.sin(rad) + p.y() * math.cos(rad)
+                    proj_vals.append(val)
+                
+                avg_proj = sum(proj_vals) / len(proj_vals)
+                rows_to_sort.append({'pass_idx': pass_idx, 'proj': avg_proj})
+
+            # Ordenar todas as linhas do grupo pelo valor de projeção
+            rows_to_sort.sort(key=lambda x: x['proj'])
             
-            avg_proj = sum(p[1] for p in group_projections) / len(group_projections)
-            all_groups.append({
-                'items': group_projections,
-                'avg_proj': avg_proj
-            })
-
-        # Ordenar os GRUPOS (passadas) espacialmente pelo valor de projeção
-        all_groups.sort(key=lambda g: g['avg_proj'])
-
-        # Atribuir pass_id e seq_num baseados na ordem espacial
-        for group_idx, group in enumerate(all_groups, 1):
-            # Ordenar segmentos dentro da mesma passada (se houver mais de um)
-            group['items'].sort(key=lambda x: x[1])
-            for seq, (line_idx, _) in enumerate(group['items'], 1):
-                line_data[line_idx]['group'] = group_idx
-                line_data[line_idx]['num'] = seq
+            for seq, row_info in enumerate(rows_to_sort, 1):
+                for idx in passadas_unidas[row_info['pass_idx']]['indices']:
+                    line_data[idx]['grupo_id'] = g_idx
+                    line_data[idx]['seq_num'] = seq
 
         # Salvar feições processadas no sink de saída
         for d in line_data:
             out_feat = QgsFeature(fields)
             out_feat.setGeometry(d['feat'].geometry())
             new_attrs = d['feat'].attributes()
-            new_attrs.extend([d['group'], d['num'], d['type'], d['azimuth']])
+            new_attrs.extend([d['grupo_id'], d['seq_num'], d['type'], d['azimuth']])
             out_feat.setAttributes(new_attrs)
             sink.addFeature(out_feat, QgsFeatureSink.FastInsert)
 
