@@ -83,9 +83,10 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
 
         # Configurar campos de saída
         fields = source.fields()
-        fields.append(QgsField('pass_id', QVariant.Int))
+        fields.append(QgsField('grupo_id', QVariant.Int))
         fields.append(QgsField('seq_num', QVariant.Int))
         fields.append(QgsField('geomet_tp', QVariant.String))
+        fields.append(QgsField('azimuth', QVariant.Double))
 
         (sink, dest_id) = self.parameterAsSink(
             parameters, 
@@ -227,7 +228,7 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
             out_feat = QgsFeature(fields)
             out_feat.setGeometry(d['feat'].geometry())
             new_attrs = d['feat'].attributes()
-            new_attrs.extend([d['group'], d['num'], d['type']])
+            new_attrs.extend([d['group'], d['num'], d['type'], d['azimuth']])
             out_feat.setAttributes(new_attrs)
             sink.addFeature(out_feat, QgsFeatureSink.FastInsert)
 
