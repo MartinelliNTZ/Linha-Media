@@ -32,6 +32,7 @@ __revision__ = '$Format:%H$'
 
 from qgis.core import QgsProcessingProvider
 from .LinhaMestra_algorithm import LinhaMestraAlgorithm
+from .LinhaMestra_numeracao_algorithm import LinhaMestraNumeracaoAlgorithm
 
 
 class LinhaMestraProvider(QgsProcessingProvider):
@@ -54,8 +55,7 @@ class LinhaMestraProvider(QgsProcessingProvider):
         Loads all algorithms belonging to this provider.
         """
         self.addAlgorithm(LinhaMestraAlgorithm())
-        # add additional algorithms here
-        # self.addAlgorithm(MyOtherAlgorithm())
+        self.addAlgorithm(LinhaMestraNumeracaoAlgorithm())
 
     def id(self):
         """
