@@ -159,20 +159,19 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         )
 
         # 3. Escrita dos Resultados (Orquestração pura)
+        total_mestra = len(mestra_results)
         for i, res in enumerate(mestra_results):
             if feedback.isCanceled(): break
-            feat_mestra = QgsFeature(fields_mestra)
-            feat_mestra.setGeometry(res['geom'])
-            feat_mestra.setAttribute('id_segmento', i + 1)
-            feat_mestra.setAttribute('dist_mae', res['dist'])
+            feat_mestra = VectorUtils.create_feature(res['geom'], fields_mestra, [res['id'], res['dist']])
             sink.addFeature(feat_mestra, QgsFeatureSink.FastInsert)
+            feedback.setProgress(int((i / total_mestra) * 50))
 
-        for i, geom_conn in enumerate(conexao_results):
+        total_conn = len(conexao_results)
+        for i, res_c in enumerate(conexao_results):
             if feedback.isCanceled(): break
-            feat_conn = QgsFeature(fields_intermediate)
-            feat_conn.setGeometry(geom_conn)
-            feat_conn.setAttribute('id_conexao', i + 1)
+            feat_conn = VectorUtils.create_feature(res_c['geom'], fields_intermediate, [res_c['id']])
             sink_intermediate.addFeature(feat_conn, QgsFeatureSink.FastInsert)
+            feedback.setProgress(50 + int((i / total_conn) * 50))
 
         return {self.OUTPUT: dest_id, self.INTERMEDIATE_LINES_OUTPUT: dest_id_intermediate}
 

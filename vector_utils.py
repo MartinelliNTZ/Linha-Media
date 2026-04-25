@@ -3,6 +3,7 @@
 import math
 from qgis.core import (QgsGeometry, 
                        QgsPointXY, 
+                       QgsFeature,
                        QgsCoordinateTransform,
                        QgsWkbTypes)
 
@@ -134,19 +135,31 @@ class VectorUtils:
             if feedback and feedback.isCanceled(): break
             
             item = dados[i]
+            # Guardamos os dados brutos para o orquestrador montar as feições
             if i < total - 1:
                 proximo = dados[i+1]
                 geom_mestra = QgsGeometry.fromPolylineXY([item['centro'], proximo['centro']])
-                mestra_segments.append({'geom': geom_mestra, 'dist': item['dist']})
+                mestra_segments.append({
+                    'geom': geom_mestra, 
+                    'dist': item['dist'],
+                    'id': i + 1
+                })
             
             geom_conn = QgsGeometry.fromPolylineXY([item['p1'], item['p2']])
-            connections.append(geom_conn)
+            connections.append({
+                'geom': geom_conn,
+                'id': i + 1
+            })
             
-            if feedback:
-                # Progresso de 50% a 100% (a interpolação faz de 0 a 50%)
-                feedback.setProgress(50 + int((i / total) * 50))
-                
         return mestra_segments, connections
+
+    @staticmethod
+    def create_feature(geometry, fields, attributes):
+        """Cria uma QgsFeature genérica com geometria e atributos."""
+        feat = QgsFeature(fields)
+        feat.setGeometry(geometry)
+        feat.setAttributes(attributes)
+        return feat
 
     @staticmethod
     def calculate_interpolation_data(geom1, geom2, particoes, feedback=None):
@@ -182,9 +195,5 @@ class VectorUtils:
                 'centro': centro,
                 'dist': dist_mae
             })
-            
-            if feedback:
-                # Ocupa os primeiros 50% do progresso total do algoritmo executor
-                feedback.setProgress(int((i / (particoes + 1)) * 50))
         
         return dados_particao
