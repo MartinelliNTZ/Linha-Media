@@ -162,29 +162,46 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         if linha1 is None:
             raise QgsProcessingException(self.tr('Erro de Seleção: Escolha 2 feições na mesma camada ou 1 em cada camada.'))
 
-        # 2. Geração da Linha Mestra baseada no estilo selecionado
-        if estilo_mestra == 0:
-            # Ponto a Ponto (Interpolado)
-            mestra_final, conexao_results, perp_results = VectorUtils.generate_linhamestra_elements(
-                linha1.geometry(), linha2.geometry(), particoes, feedback
-            )
-        else:
-            # Proximidade (Média Espacial baseada no ConnectionJudge com ordenação por pesos)
-            near_conns = ConnectionJudge.solve_nearest_with_criteria(linha1.geometry(), linha2.geometry(), criterio)
-            mestra_final = VectorUtils.generate_mestra_from_connections(near_conns)
-            # Geramos os outros elementos para permitir que o usuário escolha estilos de conexão diferentes
-            _, conexao_results, perp_results = VectorUtils.generate_linhamestra_elements(
-                linha1.geometry(), linha2.geometry(), particoes, feedback
-            )
+        # 2. Lógica de Pipeline Otimizada
+        g1, g2 = VectorUtils.align_line_pair(linha1.geometry(), linha2.geometry())
+        
+        # Determinar quais dados precisamos calcular para evitar duplicidade
+        needs_near = (estilo_mestra == 1 or estilo == 0)
+        needs_interp = (estilo_mestra == 0 or estilo == 2 or estilo == 1) # Perpendicular também precisa de interp
+        
+        near_conns = []
+        interp_conns = []
+        perp_results = []
 
-        # 2.1. Seleção do estilo de conexão conforme parâmetro
-        if estilo == 0: # Proximidade
-            conexao_final_results = ConnectionJudge.solve_nearest_with_criteria(
-                linha1.geometry(), linha2.geometry(), criterio)
+        # A. Processamento por Proximidade
+        if needs_near:
+            feedback.pushInfo(self.tr('Calculando conexões por Proximidade...'))
+            near_conns = ConnectionJudge.solve_nearest_with_criteria(g1, g2, criterio)
+            near_conns = VectorUtils.filter_connections(near_conns, g1, g2, crs_final)
+
+        # B. Processamento por Interpolação (Ponto a Ponto)
+        if needs_interp:
+            feedback.pushInfo(self.tr('Calculando conexões por Interpolação...'))
+            m_results, c_results, p_results = VectorUtils.generate_linhamestra_elements(g1, g2, particoes, feedback)
+            interp_conns = VectorUtils.filter_connections(c_results, g1, g2, crs_final)
+            perp_results = p_results # As perpendiculares são geradas no fluxo de interpolação
+            interp_mestra_results = m_results
+
+        # 3. Definição da Linha Mestra Final
+        if estilo_mestra == 1:
+            # Mestra baseada nas conexões de proximidade filtradas
+            mestra_final = VectorUtils.generate_mestra_from_connections(near_conns)
+        else:
+            # Mestra baseada nas conexões interpoladas filtradas
+            mestra_final = VectorUtils.generate_mestra_from_connections(interp_conns)
+
+        # 4. Seleção do estilo de conexão para saída
+        if estilo == 0:
+            conexao_final_results = near_conns
         elif estilo == 1: # Perpendicular
             conexao_final_results = perp_results
-        else: # Conexão Direta
-            conexao_final_results = conexao_results
+        else: # Conexão Direta (Ponto a Ponto)
+            conexao_final_results = interp_conns
 
         # Definir os campos de saída (ID do segmento)
         fields_mestra = QgsFields()

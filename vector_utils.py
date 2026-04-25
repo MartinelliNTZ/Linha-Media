@@ -458,3 +458,27 @@ class VectorUtils:
                 'id': i + 1
             })
         return mestra_segments
+
+    @staticmethod
+    def filter_connections(connections, g1, g2, crs):
+        """
+        Filtra conexões que cruzam as linhas mãe.
+        Reduz 1cm em cada ponta para evitar falsos positivos nos vértices de contato.
+        """
+        from .geometry_utils import VectorLayerGeometry
+        
+        # 1cm em metros ou equivalente em graus
+        delta = 0.01 
+        if crs.isGeographic():
+            delta = 0.01 / 111120.0
+            
+        filtered = []
+        for conn in connections:
+            # Reduzimos a linha para teste de cruzamento
+            test_geom = VectorLayerGeometry.adjust_line_length(conn['geom'], -delta)
+            
+            # Se a linha reduzida não cruza nenhuma das mães, ela é válida
+            if not (test_geom.intersects(g1) or test_geom.intersects(g2)):
+                filtered.append(conn)
+                
+        return filtered
