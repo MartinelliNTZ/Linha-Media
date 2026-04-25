@@ -203,6 +203,9 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         # Configurar o sink para as conexões (Unificado)
         fields_conexao = QgsFields()
         fields_conexao.append(QgsField('id_conexao', QVariant.Int))
+        fields_conexao.append(QgsField('id_pai', QVariant.Double))
+        fields_conexao.append(QgsField('id_mae', QVariant.Double))
+        fields_conexao.append(QgsField('id_origem', QVariant.Double))
         (sink_conexao, dest_id_conexao) = self.parameterAsSink(
             parameters,
             self.CONEXAO_OUTPUT,
@@ -218,7 +221,13 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         def write_results(results, sink, fields):
             for res in results:
                 if feedback.isCanceled(): break
-                feat = VectorUtils.create_feature(res['geom'], fields, [res['id']])
+                attrs = [
+                    res.get('id', 0),
+                    res.get('id_pai', 0),
+                    res.get('id_mae', 0),
+                    res.get('id_origem', 0)
+                ]
+                feat = VectorUtils.create_feature(res['geom'], fields, attrs)
                 sink.addFeature(feat, QgsFeatureSink.FastInsert)
 
         # Mestra precisa de um campo extra (dist_mae), então fazemos manual
