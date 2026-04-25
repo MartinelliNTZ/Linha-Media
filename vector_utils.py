@@ -128,18 +128,28 @@ class VectorUtils:
     @staticmethod
     def _get_closest_point(geom, ref_point):
         """Extrai o ponto mais próximo de um ponto de referência a partir de uma geometria."""
-        if not geom or geom.isEmpty():
+        if geom is None or geom.isEmpty():
             return None
             
-        # O método nearestPoint é o mais robusto para encontrar a projeção em qualquer geometria.
-        # No QGIS 3.16, asPoint() garante o retorno de um QgsPointXY.
+        # Se o resultado da intersecção for uma GeometryCollection, precisamos encontrar o ponto mais próximo entre todas as suas partes.
+        if geom.wkbType() == QgsWkbTypes.GeometryCollection:
+            closest_pt = None
+            min_dist = float('inf')
+            for part_geom in geom.asGeometryCollection():
+                part_closest = VectorUtils._get_closest_point(part_geom, ref_point) # Chamada recursiva
+                if part_closest:
+                    dist = part_closest.distance(ref_point)
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_pt = part_closest
+            return closest_pt
+        
+        # Para geometrias simples (Point, LineString, Polygon)
         nearest_geom = geom.nearestPoint(QgsGeometry.fromPointXY(ref_point))
         if not nearest_geom.isEmpty():
             return nearest_geom.asPoint()
             
-        # Fallback para vértices se nearestPoint falhar (converte explicitamente para PointXY)
-        verts = [QgsPointXY(v.x(), v.y()) for v in geom.vertices()]
-        return min(verts, key=lambda p: p.distance(ref_point)) if verts else None
+        return None # Se nearestPoint retornar vazio
 
     @staticmethod
     def generate_linhamestra_elements(geom1, geom2, partitions, feedback=None):
@@ -249,6 +259,90 @@ class VectorUtils:
                 feedback.pushInfo(f"Processando ponto {i}/{total}...")
             
         return mestra_segments, connections, perpendiculars
+
+    @staticmethod
+    def generate_perpendiculars_from_line_vertices(input_line_geom, mother_line1_geom=None, mother_line2_geom=None, fixed_distance=None, feedback=None):
+        """
+        Gera linhas perpendiculares em cada vértice de uma geometria de linha.
+        A direção da perpendicular é a bissetriz do ângulo formado pelos segmentos adjacentes.
+        
+        Args:
+            input_line_geom (QgsGeometry): A geometria da linha de entrada.
+            mother_line1_geom (QgsGeometry, optional): A primeira linha mãe para intersecção.
+            mother_line2_geom (QgsGeometry, optional): A segunda linha mãe para intersecção.
+            fixed_distance (float, optional): Distância fixa para as perpendiculares se não houver linhas mães.
+            feedback (QgsProcessingFeedback, optional): Objeto de feedback para progresso.
+            
+        Returns:
+            list: Uma lista de geometrias QgsGeometry das linhas perpendiculares.
+        """
+        perpendicular_geoms = []
+        
+        if input_line_geom.isEmpty():
+            if feedback: feedback.pushInfo("Geometria de entrada vazia, pulando.")
+            return []
+            
+        # Processa cada parte da geometria (se for MultiLineString)
+        parts = input_line_geom.asMultiPolyline() if input_line_geom.isMultipart() else [input_line_geom.asPolyline()]
+        
+        for part_idx, polyline in enumerate(parts):
+            if not polyline or len(polyline) < 2:
+                if feedback: feedback.pushInfo(f"Parte {part_idx} da geometria de entrada tem menos de 2 vértices, pulando.")
+                continue
+            
+            total_vertices = len(polyline)
+            for i in range(total_vertices):
+                if feedback and feedback.isCanceled(): return []
+                
+                p_curr = QgsPointXY(polyline[i].x(), polyline[i].y())
+                
+                # Calcula o azimute local (bissetriz para vértices internos, segmento único para extremidades)
+                az_mestra = 0.0
+                if i == 0: # Primeiro vértice
+                    az_mestra = p_curr.azimuth(polyline[i+1])
+                elif i == total_vertices - 1: # Último vértice
+                    az_mestra = polyline[i-1].azimuth(p_curr)
+                else: # Vértice interno
+                    az1 = polyline[i-1].azimuth(p_curr)
+                    az2 = p_curr.azimuth(polyline[i+1])
+                    
+                    # Calcula o ângulo bissetor, tratando a quebra 0/360
+                    diff = az2 - az1
+                    if diff > 180: diff -= 360 
+                    if diff < -180: diff += 360
+                    az_mestra = (az1 + diff / 2.0) % 360
+
+                perp_az = (az_mestra + 90) % 360
+                
+                if mother_line1_geom and mother_line2_geom:
+                    # Cenário 1: Intersectar com as linhas mães
+                    ext = 10000.0 # Grande extensão para garantir intersecção
+                    rad1 = math.radians(perp_az)
+                    p_ext1 = QgsPointXY(p_curr.x() + ext * math.sin(rad1), p_curr.y() + ext * math.cos(rad1))
+                    rad2 = math.radians((perp_az + 180) % 360)
+                    p_ext2 = QgsPointXY(p_curr.x() + ext * math.sin(rad2), p_curr.y() + ext * math.cos(rad2))
+                    
+                    full_perp_line = QgsGeometry.fromPolylineXY([p_ext1, p_ext2])
+                    
+                    inter1 = mother_line1_geom.intersection(full_perp_line)
+                    inter2 = mother_line2_geom.intersection(full_perp_line)
+                    
+                    pt1 = VectorUtils._get_closest_point(inter1, p_curr)
+                    pt2 = VectorUtils._get_closest_point(inter2, p_curr)
+                    
+                    if pt1 and pt2:
+                        perpendicular_geoms.append(QgsGeometry.fromPolylineXY([pt1, pt2]))
+                    elif feedback:
+                        feedback.pushInfo(f"Falha na intersecção para vértice {i} da parte {part_idx}. Linha perpendicular não gerada.")
+                else:
+                    # Cenário 2: Distância fixa
+                    half_dist = fixed_distance / 2.0
+                    rad = math.radians(perp_az)
+                    p_start = QgsPointXY(p_curr.x() - half_dist * math.sin(rad), p_curr.y() - half_dist * math.cos(rad))
+                    p_end = QgsPointXY(p_curr.x() + half_dist * math.sin(rad), p_curr.y() + half_dist * math.cos(rad))
+                    perpendicular_geoms.append(QgsGeometry.fromPolylineXY([p_start, p_end]))
+                    
+        return perpendicular_geoms
 
     @staticmethod
     def create_feature(geometry, fields, attributes):
