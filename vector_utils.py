@@ -144,7 +144,7 @@ class VectorUtils:
     def generate_linhamestra_elements(geom1, geom2, partitions, feedback=None):
         """
         Orquestra o fluxo completo de geração da linha mestra.
-        Retorna (lista_segmentos_mestra, lista_conexoes_transversais, lista_perpendiculares).
+        Retorna (mestra, conexoes, perpendiculares, mais_proximo_1, mais_proximo_2).
         """
         # 1. Normaliza a primeira linha para uma direção padrão (Noroeste)
         g1 = VectorUtils.orient_northwest(geom1)
@@ -170,7 +170,7 @@ class VectorUtils:
         
         if not dados:
             if feedback: feedback.reportError("Falha ao gerar dados de interpolação.")
-            return [], [], []
+            return [], [], [], [], []
 
         mestra_segments = []
         connections = []

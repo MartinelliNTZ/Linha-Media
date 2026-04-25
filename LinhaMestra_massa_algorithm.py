@@ -14,6 +14,7 @@ from qgis.core import (QgsProcessing,
                        QgsFields,
                        QgsField)
 from .vector_utils import VectorUtils
+from .connection_judge import ConnectionJudge
 
 class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
@@ -122,6 +123,10 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 mestra_res, conn_res, perp_res = VectorUtils.generate_linhamestra_elements(
                     f1.geometry(), f2.geometry(), particoes, feedback
                 )
+
+                # Julgamento das conexões de proximidade sem órfãos
+                n1_res, n2_res = ConnectionJudge.solve_bidirectional_nearest(
+                    f1.geometry(), f2.geometry())
 
                 if not mestra_res:
                     feedback.reportError(f"Falha ao gerar elementos para o par {par_id} no grupo {group_val}")

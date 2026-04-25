@@ -44,6 +44,7 @@ from qgis.core import (QgsProcessing,
                        QgsFields,
                        QgsField)
 from .vector_utils import VectorUtils
+from .connection_judge import ConnectionJudge
 
 class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     """
@@ -68,6 +69,8 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     INPUT_2 = 'INPUT_2'
     INTERMEDIATE_LINES_OUTPUT = 'INTERMEDIATE_LINES_OUTPUT'
     PERPENDICULAR_OUTPUT = 'PERPENDICULAR_OUTPUT'
+    NEAREST_1_TO_2 = 'NEAREST_1_TO_2'
+    NEAREST_2_TO_1 = 'NEAREST_2_TO_1'
     PARTICOES = 'PARTICOES'
 
     def initAlgorithm(self, config):
@@ -126,6 +129,22 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             )
         )
 
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.NEAREST_1_TO_2,
+                self.tr('Menor Distância (Mãe 1 para Mãe 2)'),
+                QgsProcessing.TypeVectorLine
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.NEAREST_2_TO_1,
+                self.tr('Menor Distância (Mãe 2 para Mãe 1)'),
+                QgsProcessing.TypeVectorLine
+            )
+        )
+
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         source2 = self.parameterAsSource(parameters, self.INPUT_2, context)
@@ -140,6 +159,10 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         mestra_results, conexao_results, perp_results = VectorUtils.generate_linhamestra_elements(
             linha1.geometry(), linha2.geometry(), particoes, feedback
         )
+
+        # 2.1. Julgamento das Conexões de Menor Distância (Novo Juiz)
+        n1_results, n2_results = ConnectionJudge.solve_bidirectional_nearest(
+            linha1.geometry(), linha2.geometry())
 
         # Definir os campos de saída (ID do segmento)
         fields_mestra = QgsFields()
@@ -174,32 +197,44 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             parameters, self.PERPENDICULAR_OUTPUT, context, fields_perp, QgsWkbTypes.LineString, crs_final
         )
 
+        # Sinks para as novas camadas de proximidade
+        fields_near = QgsFields()
+        fields_near.append(QgsField('id_ponto', QVariant.Int))
+        
+        (sink_n1, dest_id_n1) = self.parameterAsSink(
+            parameters, self.NEAREST_1_TO_2, context, fields_near, QgsWkbTypes.LineString, crs_final
+        )
+        (sink_n2, dest_id_n2) = self.parameterAsSink(
+            parameters, self.NEAREST_2_TO_1, context, fields_near, QgsWkbTypes.LineString, crs_final
+        )
+
         # 3. Escrita dos Resultados (Orquestração pura)
         feedback.pushInfo(self.tr('Escrevendo feições na camada de saída...'))
-        total_mestra = len(mestra_results)
+
+        def write_results(results, sink, fields):
+            for res in results:
+                if feedback.isCanceled(): break
+                feat = VectorUtils.create_feature(res['geom'], fields, [res['id']])
+                sink.addFeature(feat, QgsFeatureSink.FastInsert)
+
+        # Mestra precisa de um campo extra (dist_mae), então fazemos manual
         for i, res in enumerate(mestra_results):
             if feedback.isCanceled(): break
-            feat_mestra = VectorUtils.create_feature(res['geom'], fields_mestra, [res['id'], res['dist']])
-            sink.addFeature(feat_mestra, QgsFeatureSink.FastInsert)
-            feedback.setProgress(int((i / total_mestra) * 33))
+            feat = VectorUtils.create_feature(res['geom'], fields_mestra, [res['id'], res['dist']])
+            sink.addFeature(feat, QgsFeatureSink.FastInsert)
 
-        total_conn = len(conexao_results)
-        for i, res_c in enumerate(conexao_results):
-            if feedback.isCanceled(): break
-            feat_conn = VectorUtils.create_feature(res_c['geom'], fields_intermediate, [res_c['id']])
-            sink_intermediate.addFeature(feat_conn, QgsFeatureSink.FastInsert)
-            feedback.setProgress(33 + int((i / total_conn) * 33))
+        write_results(conexao_results, sink_intermediate, fields_intermediate)
+        write_results(perp_results, sink_perp, fields_perp)
+        write_results(n1_results, sink_n1, fields_near)
+        write_results(n2_results, sink_n2, fields_near)
 
-        total_perp = len(perp_results)
-        for i, res_p in enumerate(perp_results):
-            if feedback.isCanceled(): break
-            feat_perp = VectorUtils.create_feature(res_p['geom'], fields_perp, [res_p['id']])
-            sink_perp.addFeature(feat_perp, QgsFeatureSink.FastInsert)
-            feedback.setProgress(66 + int((i / total_perp) * 34))
-
-        return {self.OUTPUT: dest_id, 
-                self.INTERMEDIATE_LINES_OUTPUT: dest_id_intermediate,
-                self.PERPENDICULAR_OUTPUT: dest_id_perp}
+        return {
+            self.OUTPUT: dest_id, 
+            self.INTERMEDIATE_LINES_OUTPUT: dest_id_intermediate,
+            self.PERPENDICULAR_OUTPUT: dest_id_perp,
+            self.NEAREST_1_TO_2: dest_id_n1,
+            self.NEAREST_2_TO_1: dest_id_n2
+        }
 
     def name(self):
         return 'linhamestra_gerador'
