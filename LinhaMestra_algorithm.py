@@ -164,6 +164,11 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
 
         # 2. Lógica de Pipeline Otimizada
         g1, g2 = VectorUtils.align_line_pair(linha1.geometry(), linha2.geometry())
+
+        # Determinar o número alvo de segmentos (partições) baseado no maior valor
+        v_count1 = sum(1 for _ in g1.vertices())
+        v_count2 = sum(1 for _ in g2.vertices())
+        target_n = max(particoes, v_count1 - 1, v_count2 - 1)
         
         # Determinar quais dados precisamos calcular para evitar duplicidade
         needs_near = (estilo_mestra == 1 or estilo == 0)
@@ -176,13 +181,13 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         # A. Processamento por Proximidade
         if needs_near:
             feedback.pushInfo(self.tr('Calculando conexões por Proximidade...'))
-            near_conns = ConnectionJudge.solve_nearest_with_criteria(g1, g2, criterio)
+            near_conns = ConnectionJudge.solve_nearest_with_criteria(g1, g2, criterio, target_n)
             near_conns = VectorUtils.filter_connections(near_conns, g1, g2, crs_final)
 
         # B. Processamento por Interpolação (Ponto a Ponto)
         if needs_interp:
             feedback.pushInfo(self.tr('Calculando conexões por Interpolação...'))
-            m_results, c_results, p_results = VectorUtils.generate_linhamestra_elements(g1, g2, particoes, feedback)
+            m_results, c_results, p_results = VectorUtils.generate_linhamestra_elements(g1, g2, target_n, feedback)
             interp_conns = VectorUtils.filter_connections(c_results, g1, g2, crs_final)
             perp_results = p_results # As perpendiculares são geradas no fluxo de interpolação
             interp_mestra_results = m_results

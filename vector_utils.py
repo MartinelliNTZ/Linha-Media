@@ -436,6 +436,23 @@ class VectorUtils:
         return dados_particao
 
     @staticmethod
+    def get_equidistant_points(geom, num_points):
+        """Retorna uma lista de num_points pontos QgsPointXY uniformemente espaçados ao longo da geometria."""
+        if geom.isEmpty():
+            return []
+        if num_points < 2:
+            return [QgsPointXY(v.x(), v.y()) for v in geom.vertices()]
+        
+        length = geom.length()
+        points = []
+        for i in range(num_points):
+            interpolated_geom = geom.interpolate((length / (num_points - 1)) * i)
+            if not interpolated_geom.isEmpty():
+                pt = interpolated_geom.asPoint()
+                points.append(QgsPointXY(pt.x(), pt.y()))
+        return points
+
+    @staticmethod
     def generate_mestra_from_connections(connection_results):
         """
         Gera segmentos de linha mestra a partir de uma lista ordenada de conexões.

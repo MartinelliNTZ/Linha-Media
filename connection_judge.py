@@ -10,18 +10,15 @@ class ConnectionJudge:
     """
 
     @staticmethod
-    def generate_nearest_with_orphans(base_geom, target_geom):
+    def generate_nearest_with_orphans(base_geom, target_geom, target_n):
         """
         Gera conexões de menor distância garantindo que nenhum vértice da linha alvo fique órfão.
-        
-        Lógica:
-        1. Cada vértice da base se liga ao ponto mais próximo da linha alvo.
-        2. Vértices da alvo que não receberam conexões (órfãos) são identificados.
-        3. Órfãos de início/fim ligam-se às extremidades da base.
-        4. Órfãos do meio ligam-se ao centroide dos limites de 'adoção' na base.
+        Usa amostragem uniforme baseada em target_n para garantir densidade.
         """
-        base_verts = [QgsPointXY(v.x(), v.y()) for v in base_geom.vertices()]
-        target_verts = [QgsPointXY(v.x(), v.y()) for v in target_geom.vertices()]
+        # Amostragem uniforme para garantir a quantidade de divisões solicitada
+        # target_n é o número de segmentos, logo precisamos de n + 1 pontos
+        base_verts = VectorUtils.get_equidistant_points(base_geom, target_n + 1)
+        target_verts = VectorUtils.get_equidistant_points(target_geom, target_n + 1)
         
         if not base_verts or not target_verts:
             return []
@@ -122,16 +119,14 @@ class ConnectionJudge:
         return idx
 
     @staticmethod
-    def solve_nearest_with_criteria(geom1, geom2, criteria_idx):
+    def solve_nearest_with_criteria(geom1, geom2, criteria_idx, target_n):
         """
         Executa o julgamento para decidir qual linha será a base conforme o critério.
-        Garante o alinhamento prévio das linhas para o 'casamento'.
         """
         # 1. Alinhamento prévio para garantir que os vértices 0 coincidam espacialmente
         g1, g2 = VectorUtils.align_line_pair(geom1, geom2)
-        
+
         use_g1_as_base = True
-        
         if criteria_idx == 0: # Menor Tamanho
             use_g1_as_base = g1.length() <= g2.length()
         elif criteria_idx == 1: # Maior Tamanho
@@ -142,7 +137,7 @@ class ConnectionJudge:
             use_g1_as_base = VectorUtils.get_line_straightness_score(g1) >= VectorUtils.get_line_straightness_score(g2)
 
         if use_g1_as_base:
-            results = ConnectionJudge.generate_nearest_with_orphans(g1, g2)
+            results = ConnectionJudge.generate_nearest_with_orphans(g1, g2, target_n)
             # id_pai mapeia para g1, id_mae mapeia para g2
             return [{
                 'geom': d['geom'], 
@@ -152,7 +147,7 @@ class ConnectionJudge:
                 'id_origem': d.get('sort_key', 0)
             } for i, d in enumerate(results)]
         else:
-            results = ConnectionJudge.generate_nearest_with_orphans(g2, g1)
+            results = ConnectionJudge.generate_nearest_with_orphans(g2, g1, target_n)
             # Invertemos os IDs no retorno para que 'Pai' sempre seja a Linha 1
             # e 'Mae' sempre seja a Linha 2, independente de quem foi a base.
             # Também invertemos a geometria da conexão para começar no Pai (g1).

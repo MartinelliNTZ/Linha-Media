@@ -141,14 +141,19 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 f2 = group_features[i+1]
                 par_id = i + 1
 
+                # Cálculo dinâmico do alvo de partições para este par
+                v_count1 = sum(1 for _ in f1.geometry().vertices())
+                v_count2 = sum(1 for _ in f2.geometry().vertices())
+                target_n = max(particoes, v_count1 - 1, v_count2 - 1)
+
                 # 1. Processamento Geométrico (Mestra, Conexões, Perpendiculares)
                 mestra_res, conn_res, perp_res = VectorUtils.generate_linhamestra_elements(
-                    f1.geometry(), f2.geometry(), particoes, feedback
+                    f1.geometry(), f2.geometry(), target_n, feedback
                 )
                 
                 # 2. Julgamento de Proximidade (Nearest)
                 near_res = ConnectionJudge.solve_nearest_with_criteria(
-                    f1.geometry(), f2.geometry(), criterio)
+                    f1.geometry(), f2.geometry(), criterio, target_n)
 
                 # Escrita dos Resultados
                 for res in mestra_res:
