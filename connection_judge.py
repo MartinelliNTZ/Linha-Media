@@ -95,20 +95,26 @@ class ConnectionJudge:
         return idx
 
     @staticmethod
-    def solve_bidirectional_nearest(geom1, geom2):
+    def solve_nearest_with_criteria(geom1, geom2, criteria_idx):
         """
-        Executa o julgamento completo para os dois produtos de proximidade.
-        Retorna (connections_1_to_2, connections_2_to_1)
+        Executa o julgamento para decidir qual linha será a base conforme o critério.
+        0: menor tamanho, 1: maior tamanho, 2: menor angulo, 3: maior angulo, 4: qualquer
         """
-        # O Juiz decide tratar as geometrias e chamar a lógica de órfãos
-        # Produto 1: Mae 1 é a base
-        res1 = ConnectionJudge.generate_nearest_with_orphans(geom1, geom2)
+        use_g1_as_base = True
         
-        # Produto 2: Mae 2 é a base
-        res2 = ConnectionJudge.generate_nearest_with_orphans(geom2, geom1)
-        
-        # Formata para o padrão esperado pelo algoritmo (lista de dicionários)
-        out1 = [{'geom': g, 'id': i+1} for i, g in enumerate(res1)]
-        out2 = [{'geom': g, 'id': i+1} for i, g in enumerate(res2)]
-        
-        return out1, out2
+        if criteria_idx == 0: # Menor Tamanho
+            use_g1_as_base = geom1.length() <= geom2.length()
+        elif criteria_idx == 1: # Maior Tamanho
+            use_g1_as_base = geom1.length() >= geom2.length()
+        elif criteria_idx == 2: # Menor Ângulo (Mais fechada/curva)
+            use_g1_as_base = VectorUtils.get_line_straightness_score(geom1) <= VectorUtils.get_line_straightness_score(geom2)
+        elif criteria_idx == 3: # Maior Ângulo (Mais aberta/reta)
+            use_g1_as_base = VectorUtils.get_line_straightness_score(geom1) >= VectorUtils.get_line_straightness_score(geom2)
+        # else: criteria_idx == 4 ou empate -> use_g1_as_base = True
+
+        if use_g1_as_base:
+            results = ConnectionJudge.generate_nearest_with_orphans(geom1, geom2)
+        else:
+            results = ConnectionJudge.generate_nearest_with_orphans(geom2, geom1)
+            
+        return [{'geom': g, 'id': i+1} for i, g in enumerate(results)]

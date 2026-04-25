@@ -37,6 +37,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterNumber,
+                       QgsProcessingParameterEnum,
                        QgsProcessingException,
                        QgsGeometry,
                        QgsFeature,
@@ -69,8 +70,8 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     INPUT_2 = 'INPUT_2'
     INTERMEDIATE_LINES_OUTPUT = 'INTERMEDIATE_LINES_OUTPUT'
     PERPENDICULAR_OUTPUT = 'PERPENDICULAR_OUTPUT'
-    NEAREST_1_TO_2 = 'NEAREST_1_TO_2'
-    NEAREST_2_TO_1 = 'NEAREST_2_TO_1'
+    NEAREST_OUTPUT = 'NEAREST_OUTPUT'
+    CRITERIO_PROXIMIDADE = 'CRITERIO_PROXIMIDADE'
     PARTICOES = 'PARTICOES'
 
     def initAlgorithm(self, config):
@@ -99,6 +100,15 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
                 minValue=10,
                 maxValue=999999,
                 defaultValue=1000
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.CRITERIO_PROXIMIDADE,
+                self.tr('Critério de Proximidade (Escolha da Base)'),
+                options=['Menor Tamanho', 'Maior Tamanho', 'Menor Ângulo', 'Maior Ângulo', 'Qualquer uma'],
+                defaultValue=4
             )
         )
 
@@ -131,16 +141,8 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
 
         self.addParameter(
             QgsProcessingParameterFeatureSink(
-                self.NEAREST_1_TO_2,
-                self.tr('Menor Distância (Mãe 1 para Mãe 2)'),
-                QgsProcessing.TypeVectorLine
-            )
-        )
-
-        self.addParameter(
-            QgsProcessingParameterFeatureSink(
-                self.NEAREST_2_TO_1,
-                self.tr('Menor Distância (Mãe 2 para Mãe 1)'),
+                self.NEAREST_OUTPUT,
+                self.tr('Menor Distância (Proximidade)'),
                 QgsProcessing.TypeVectorLine
             )
         )
@@ -149,6 +151,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         source2 = self.parameterAsSource(parameters, self.INPUT_2, context)
         particoes = self.parameterAsInt(parameters, self.PARTICOES, context)
+        criterio = self.parameterAsInt(parameters, self.CRITERIO_PROXIMIDADE, context)
 
         # 1. Extração e Validação (Delegado para VectorUtils)
         linha1, linha2, crs_final = VectorUtils.extract_two_features(source, source2, context)
@@ -161,8 +164,8 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         )
 
         # 2.1. Julgamento das Conexões de Menor Distância (Novo Juiz)
-        n1_results, n2_results = ConnectionJudge.solve_bidirectional_nearest(
-            linha1.geometry(), linha2.geometry())
+        near_results = ConnectionJudge.solve_nearest_with_criteria(
+            linha1.geometry(), linha2.geometry(), criterio)
 
         # Definir os campos de saída (ID do segmento)
         fields_mestra = QgsFields()
@@ -201,11 +204,8 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         fields_near = QgsFields()
         fields_near.append(QgsField('id_ponto', QVariant.Int))
         
-        (sink_n1, dest_id_n1) = self.parameterAsSink(
-            parameters, self.NEAREST_1_TO_2, context, fields_near, QgsWkbTypes.LineString, crs_final
-        )
-        (sink_n2, dest_id_n2) = self.parameterAsSink(
-            parameters, self.NEAREST_2_TO_1, context, fields_near, QgsWkbTypes.LineString, crs_final
+        (sink_near, dest_id_near) = self.parameterAsSink(
+            parameters, self.NEAREST_OUTPUT, context, fields_near, QgsWkbTypes.LineString, crs_final
         )
 
         # 3. Escrita dos Resultados (Orquestração pura)
@@ -225,15 +225,13 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
 
         write_results(conexao_results, sink_intermediate, fields_intermediate)
         write_results(perp_results, sink_perp, fields_perp)
-        write_results(n1_results, sink_n1, fields_near)
-        write_results(n2_results, sink_n2, fields_near)
+        write_results(near_results, sink_near, fields_near)
 
         return {
             self.OUTPUT: dest_id, 
             self.INTERMEDIATE_LINES_OUTPUT: dest_id_intermediate,
             self.PERPENDICULAR_OUTPUT: dest_id_perp,
-            self.NEAREST_1_TO_2: dest_id_n1,
-            self.NEAREST_2_TO_1: dest_id_n2
+            self.NEAREST_OUTPUT: dest_id_near
         }
 
     def name(self):

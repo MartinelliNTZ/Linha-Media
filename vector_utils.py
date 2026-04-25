@@ -126,6 +126,32 @@ class VectorUtils:
         return -point.x() * math.sin(rad) + point.y() * math.cos(rad)
 
     @staticmethod
+    def calculate_internal_angle(p1, p2, p3):
+        """Calcula o ângulo interno em p2 formado pelos segmentos p1-p2 e p2-p3."""
+        v1 = (p1.x() - p2.x(), p1.y() - p2.y())
+        v2 = (p3.x() - p2.x(), p3.y() - p2.y())
+        dot = v1[0]*v2[0] + v1[1]*v2[1]
+        mag1 = math.sqrt(v1[0]**2 + v1[1]**2)
+        mag2 = math.sqrt(v2[0]**2 + v2[1]**2)
+        if mag1 == 0 or mag2 == 0: return 180.0
+        cos_theta = max(-1.0, min(1.0, dot / (mag1 * mag2)))
+        return math.degrees(math.acos(cos_theta))
+
+    @staticmethod
+    def get_line_straightness_score(geom):
+        """Mede quão 'aberta' é a linha baseada na média de ângulos de 5 pontos amostrados."""
+        length = geom.length()
+        if length == 0: return 180.0
+        # Amostra 5 pontos uniformemente (0%, 25%, 50%, 75%, 100%)
+        pts = [QgsPointXY(geom.interpolate(length * (i/4.0)).asPoint().x(), 
+                         geom.interpolate(length * (i/4.0)).asPoint().y()) for i in range(5)]
+        # Ângulos nos pontos internos
+        a1 = VectorUtils.calculate_internal_angle(pts[0], pts[1], pts[2])
+        a2 = VectorUtils.calculate_internal_angle(pts[1], pts[2], pts[3])
+        a3 = VectorUtils.calculate_internal_angle(pts[2], pts[3], pts[4])
+        return (a1 + a2 + a3) / 3.0
+
+    @staticmethod
     def _get_closest_point(geom, ref_point):
         """Extrai o ponto mais próximo de um ponto de referência a partir de uma geometria."""
         if geom is None or geom.isEmpty():
