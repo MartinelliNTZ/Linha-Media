@@ -71,6 +71,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     CONEXAO_OUTPUT = 'CONEXAO_OUTPUT'
     CRITERIO_PROXIMIDADE = 'CRITERIO_PROXIMIDADE'
     ESTILO_CONEXAO = 'ESTILO_CONEXAO'
+    ESTILO_LINHA_MESTRA = 'ESTILO_LINHA_MESTRA'
     PARTICOES = 'PARTICOES'
 
     def initAlgorithm(self, config):
@@ -113,6 +114,15 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
 
         self.addParameter(
             QgsProcessingParameterEnum(
+                self.ESTILO_LINHA_MESTRA,
+                self.tr('Estilo da Linha Mestra'),
+                options=['Interpolação (Ponto a Ponto)', 'Proximidade (Média Espacial)'],
+                defaultValue=1
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterEnum(
                 self.CRITERIO_PROXIMIDADE,
                 self.tr('Critério de Proximidade (Escolha da Base)'),
                 options=['Menor Tamanho', 'Maior Tamanho', 'Menor Ângulo', 'Maior Ângulo', 'Qualquer uma'],
@@ -145,16 +155,27 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         particoes = self.parameterAsInt(parameters, self.PARTICOES, context)
         criterio = self.parameterAsInt(parameters, self.CRITERIO_PROXIMIDADE, context)
         estilo = self.parameterAsInt(parameters, self.ESTILO_CONEXAO, context)
+        estilo_mestra = self.parameterAsInt(parameters, self.ESTILO_LINHA_MESTRA, context)
 
         # 1. Extração e Validação (Delegado para VectorUtils)
         linha1, linha2, crs_final = VectorUtils.extract_two_features(source, source2, context)
         if linha1 is None:
             raise QgsProcessingException(self.tr('Erro de Seleção: Escolha 2 feições na mesma camada ou 1 em cada camada.'))
 
-        # 2. Processamento Geométrico Pesado (Delegado para VectorUtils)
-        mestra_results, conexao_results, perp_results = VectorUtils.generate_linhamestra_elements(
-            linha1.geometry(), linha2.geometry(), particoes, feedback
-        )
+        # 2. Geração da Linha Mestra baseada no estilo selecionado
+        if estilo_mestra == 0:
+            # Ponto a Ponto (Interpolado)
+            mestra_final, conexao_results, perp_results = VectorUtils.generate_linhamestra_elements(
+                linha1.geometry(), linha2.geometry(), particoes, feedback
+            )
+        else:
+            # Proximidade (Média Espacial baseada no ConnectionJudge com ordenação por pesos)
+            near_conns = ConnectionJudge.solve_nearest_with_criteria(linha1.geometry(), linha2.geometry(), criterio)
+            mestra_final = VectorUtils.generate_mestra_from_connections(near_conns)
+            # Geramos os outros elementos para permitir que o usuário escolha estilos de conexão diferentes
+            _, conexao_results, perp_results = VectorUtils.generate_linhamestra_elements(
+                linha1.geometry(), linha2.geometry(), particoes, feedback
+            )
 
         # 2.1. Seleção do estilo de conexão conforme parâmetro
         if estilo == 0: # Proximidade
@@ -201,7 +222,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
                 sink.addFeature(feat, QgsFeatureSink.FastInsert)
 
         # Mestra precisa de um campo extra (dist_mae), então fazemos manual
-        for i, res in enumerate(mestra_results):
+        for i, res in enumerate(mestra_final):
             if feedback.isCanceled(): break
             feat = VectorUtils.create_feature(res['geom'], fields_mestra, [res['id'], res['dist']])
             sink.addFeature(feat, QgsFeatureSink.FastInsert)

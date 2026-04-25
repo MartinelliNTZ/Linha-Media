@@ -26,7 +26,7 @@ class ConnectionJudge:
         if not base_verts or not target_verts:
             return []
 
-        final_connections = []
+        indexed_connections = [] # Lista de tuples (sort_key, geometry)
         
         # Dicionário para rastrear quais vértices do alvo foram "atingidos"
         # target_idx -> list of base_indices
@@ -38,17 +38,16 @@ class ConnectionJudge:
             nearest_g = target_geom.nearestPoint(QgsGeometry.fromPointXY(b_pt))
             if not nearest_g.isEmpty():
                 target_pt = nearest_g.asPoint()
-                final_connections.append(QgsGeometry.fromPolylineXY([b_pt, target_pt]))
+                indexed_connections.append((float(b_idx), QgsGeometry.fromPolylineXY([b_pt, target_pt])))
                 
                 # Identifica qual vértice do alvo está mais próximo deste ponto de impacto
-                # Isso define quem "adotou" este ponto na linha alvo
                 t_idx = ConnectionJudge._find_nearest_vertex_index(target_pt, target_verts)
                 target_coverage[t_idx].append(b_idx)
 
         # Passo 2: Identificar Órfãos no Target
         orphans = [i for i, base_indices in target_coverage.items() if not base_indices]
         if not orphans:
-            return final_connections
+            return [x[1] for x in sorted(indexed_connections, key=lambda x: x[0])]
 
         # Passo 3: Lógica do Juiz para Órfãos
         hit_indices = sorted([i for i, base_indices in target_coverage.items() if base_indices])
@@ -58,14 +57,18 @@ class ConnectionJudge:
             if not hit_indices or o_idx < hit_indices[0]:
                 # Liga ao primeiro ponto da base que teve um acerto
                 target_pt = target_verts[o_idx]
-                base_ref_idx = target_coverage[hit_indices[0]][0] if hit_indices else 0
-                final_connections.append(QgsGeometry.fromPolylineXY([target_verts[o_idx], base_verts[base_ref_idx]]))
+                base_ref_idx = target_coverage[hit_indices[0]][0] if hit_indices else 0 
+                # Peso negativo para órfãos do início (mantendo ordem entre eles)
+                sort_key = -1.0 + (o_idx / len(target_verts))
+                indexed_connections.append((sort_key, QgsGeometry.fromPolylineXY([target_verts[o_idx], base_verts[base_ref_idx]])))
             
             # Caso B: Órfãos após o último acerto (Fim)
             elif o_idx > hit_indices[-1]:
                 target_pt = target_verts[o_idx]
                 base_ref_idx = target_coverage[hit_indices[-1]][-1]
-                final_connections.append(QgsGeometry.fromPolylineXY([target_verts[o_idx], base_verts[base_ref_idx]]))
+                # Peso maior que o último índice para órfãos do fim
+                sort_key = float(len(base_verts)) + (o_idx / len(target_verts))
+                indexed_connections.append((sort_key, QgsGeometry.fromPolylineXY([target_verts[o_idx], base_verts[base_ref_idx]])))
             
             # Caso C: Órfãos no meio (Centroide dos vizinhos)
             else:
@@ -78,9 +81,13 @@ class ConnectionJudge:
                 b_idx_right = target_coverage[next_t_idx][0]
                 
                 mid_pt = VectorUtils.get_midpoint(base_verts[b_idx_left], base_verts[b_idx_right])
-                final_connections.append(QgsGeometry.fromPolylineXY([target_verts[o_idx], mid_pt]))
+                # Peso fracionado entre os dois índices da base
+                sort_key = float(b_idx_left) + 0.5 + (o_idx / (len(target_verts) * 10))
+                indexed_connections.append((sort_key, QgsGeometry.fromPolylineXY([target_verts[o_idx], mid_pt])))
 
-        return final_connections
+        # Ordenação Final: O "Juiz" decide a posição baseada na ordem espacial da base
+        indexed_connections.sort(key=lambda x: x[0])
+        return [x[1] for x in indexed_connections]
 
     @staticmethod
     def _find_nearest_vertex_index(point, vertices):

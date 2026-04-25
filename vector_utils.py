@@ -425,3 +425,27 @@ class VectorUtils:
             })
         
         return dados_particao
+
+    @staticmethod
+    def generate_mestra_from_connections(connection_results):
+        """
+        Gera segmentos de linha mestra a partir de uma lista ordenada de conexões.
+        """
+        mestra_segments = []
+        midpoints = []
+        
+        for res in connection_results:
+            line = res['geom'].asPolyline()
+            if len(line) >= 2:
+                midpoints.append({'pt': VectorUtils.get_midpoint(line[0], line[1]), 'dist': res['geom'].length()})
+        
+        for i in range(len(midpoints) - 1):
+            p_curr = midpoints[i]['pt']
+            p_next = midpoints[i+1]['pt']
+            geom_mestra = QgsGeometry.fromPolylineXY([p_curr, p_next])
+            mestra_segments.append({
+                'geom': geom_mestra,
+                'dist': midpoints[i]['dist'],
+                'id': i + 1
+            })
+        return mestra_segments
