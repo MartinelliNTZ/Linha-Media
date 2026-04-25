@@ -354,7 +354,8 @@ class VectorUtils:
                     pt1 = min(pts1, key=lambda p: p.distance(p_curr)) if pts1 else None
 
                     # Raio 2
-                    p_ext2 = QgsPointXY(p_curr.x() + ext_max * math.sin(math.radians((perp_az + 180) % 360)))
+                    p_ext2 = QgsPointXY(p_curr.x() + ext_max * math.sin(math.radians((perp_az + 180) % 360)),
+                                        p_curr.y() + ext_max * math.cos(math.radians((perp_az + 180) % 360)))
                     ray2 = QgsGeometry.fromPolylineXY([p_curr, p_ext2])
                     pts2 = []
                     for m_geom in [mother_line1_geom, mother_line2_geom]:

@@ -15,6 +15,7 @@ from qgis.core import (QgsProcessing,
                        QgsFields,
                        QgsField)
 from .vector_utils import VectorUtils
+from .connection_judge import ConnectionJudge
 
 class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
@@ -49,7 +50,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 self.CRITERIO_PROXIMIDADE,
                 self.tr('Critério de Proximidade (Escolha da Base)'),
                 options=['Menor Tamanho', 'Maior Tamanho', 'Menor Ângulo', 'Maior Ângulo', 'Qualquer uma'],
-                defaultValue=4))
+                defaultValue=0))
 
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.OUTPUT, self.tr('Linhas Mestras Geradas'), QgsProcessing.TypeVectorLine))
@@ -140,10 +141,14 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 f2 = group_features[i+1]
                 par_id = i + 1
 
-                # Processamento Geométrico delegado à Utils
-                mestra_res, conn_res, perp_res, n1_res, n2_res = VectorUtils.generate_linhamestra_elements(
+                # 1. Processamento Geométrico (Mestra, Conexões, Perpendiculares)
+                mestra_res, conn_res, perp_res = VectorUtils.generate_linhamestra_elements(
                     f1.geometry(), f2.geometry(), particoes, feedback
                 )
+                
+                # 2. Julgamento de Proximidade (Nearest)
+                near_res = ConnectionJudge.solve_nearest_with_criteria(
+                    f1.geometry(), f2.geometry(), criterio)
 
                 # Escrita dos Resultados
                 for res in mestra_res:
@@ -161,15 +166,10 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                     feat = VectorUtils.create_feature(res_p['geom'], fields_perp, attrs)
                     sink_perp.addFeature(feat, QgsFeatureSink.FastInsert)
 
-                for res_n in n1_res:
+                for res_n in near_res:
                     attrs = [str(group_val), par_id] if group_field else [par_id]
                     feat = VectorUtils.create_feature(res_n['geom'], fields_near, attrs)
-                    sink_n1.addFeature(feat, QgsFeatureSink.FastInsert)
-
-                for res_n2 in n2_res:
-                    attrs = [str(group_val), par_id] if group_field else [par_id]
-                    feat = VectorUtils.create_feature(res_n2['geom'], fields_near, attrs)
-                    sink_n2.addFeature(feat, QgsFeatureSink.FastInsert)
+                    sink_near.addFeature(feat, QgsFeatureSink.FastInsert)
 
             # Progresso baseado nos grupos processados
             feedback.setProgress(int(((g_idx + 1) / total_groups) * 100))
@@ -178,8 +178,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
             self.OUTPUT: dest_id_mestra, 
             self.INTERMEDIATE_LINES_OUTPUT: dest_id_conn,
             self.PERPENDICULAR_OUTPUT: dest_id_perp,
-            self.NEAREST_1_TO_2: dest_id_n1,
-            self.NEAREST_2_TO_1: dest_id_n2
+            self.NEAREST_OUTPUT: dest_id_near
         }
 
     def name(self):
