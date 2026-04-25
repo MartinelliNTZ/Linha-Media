@@ -130,26 +130,15 @@ class VectorUtils:
         """Extrai o ponto mais próximo de um ponto de referência a partir de uma geometria."""
         if geom is None or geom.isEmpty():
             return None
-            
-        # Se o resultado da intersecção for uma GeometryCollection, precisamos encontrar o ponto mais próximo entre todas as suas partes.
-        if geom.wkbType() == QgsWkbTypes.GeometryCollection:
-            closest_pt = None
-            min_dist = float('inf')
-            for part_geom in geom.asGeometryCollection():
-                part_closest = VectorUtils._get_closest_point(part_geom, ref_point) # Chamada recursiva
-                if part_closest:
-                    dist = part_closest.distance(ref_point)
-                    if dist < min_dist:
-                        min_dist = dist
-                        closest_pt = part_closest
-            return closest_pt
         
-        # Para geometrias simples (Point, LineString, Polygon)
+        # No QGIS 3.16, asPoint() pode retornar QgsPoint. 
+        # Forçamos QgsPointXY para compatibilidade com construtores de geometria.
         nearest_geom = geom.nearestPoint(QgsGeometry.fromPointXY(ref_point))
         if not nearest_geom.isEmpty():
-            return nearest_geom.asPoint()
+            pt = nearest_geom.asPoint()
+            return QgsPointXY(pt.x(), pt.y())
             
-        return None # Se nearestPoint retornar vazio
+        return None
 
     @staticmethod
     def generate_linhamestra_elements(geom1, geom2, partitions, feedback=None):
@@ -228,30 +217,41 @@ class VectorUtils:
                     az_mestra = (az1 + diff / 2.0) % 360
 
                 perp_az = (az_mestra + 90) % 360
-                # Exagero maior para garantir que cruze as linhas mãe mesmo em curvas
-                ext = (item['dist'] + 1.0) * 10.0 
+                ext = 10000.0 
+                half_dist = item['dist'] / 2.0
+
+                # --- Lógica de Corte Estrito ---
+                # Raio 1: Direção A
+                p_ext1 = QgsPointXY(p_curr.x() + ext * math.sin(math.radians(perp_az)),
+                                   p_curr.y() + ext * math.cos(math.radians(perp_az)))
+                ray1 = QgsGeometry.fromPolylineXY([p_curr, p_ext1])
                 
-                rad1 = math.radians(perp_az)
-                p_ext1 = QgsPointXY(p_curr.x() + ext * math.sin(rad1), p_curr.y() + ext * math.cos(rad1))
-                rad2 = math.radians((perp_az + 180) % 360)
-                p_ext2 = QgsPointXY(p_curr.x() + ext * math.sin(rad2), p_curr.y() + ext * math.cos(rad2))
+                pts1 = []
+                for m_geom in [g1, g2]:
+                    p_int = VectorUtils._get_closest_point(m_geom.intersection(ray1), p_curr)
+                    if p_int: pts1.append(p_int)
                 
-                full_perp = QgsGeometry.fromPolylineXY([p_ext1, p_ext2])
+                # Se não intersectar a mãe, usamos a distância média para manter a linha RETA
+                pt1 = min(pts1, key=lambda p: p.distance(p_curr)) if pts1 else \
+                      QgsPointXY(p_curr.x() + half_dist * math.sin(math.radians(perp_az)),
+                                 p_curr.y() + half_dist * math.cos(math.radians(perp_az)))
+
+                # Raio 2: Direção B (oposta)
+                p_ext2 = QgsPointXY(p_curr.x() + ext * math.sin(math.radians((perp_az + 180) % 360)),
+                                   p_curr.y() + ext * math.cos(math.radians((perp_az + 180) % 360)))
+                ray2 = QgsGeometry.fromPolylineXY([p_curr, p_ext2])
                 
-                # Tenta intersecção exata
-                inter1 = g1.intersection(full_perp)
-                inter2 = g2.intersection(full_perp)
+                pts2 = []
+                for m_geom in [g1, g2]:
+                    p_int = VectorUtils._get_closest_point(m_geom.intersection(ray2), p_curr)
+                    if p_int: pts2.append(p_int)
                 
-                pt1 = VectorUtils._get_closest_point(inter1, p_curr)
-                pt2 = VectorUtils._get_closest_point(inter2, p_curr)
+                pt2 = min(pts2, key=lambda p: p.distance(p_curr)) if pts2 else \
+                      QgsPointXY(p_curr.x() + half_dist * math.sin(math.radians((perp_az + 180) % 360)),
+                                 p_curr.y() + half_dist * math.cos(math.radians((perp_az + 180) % 360)))
                 
-                # Fallback: Se a intersecção falhar, usamos o ponto interpolado original para não ficar vazio
-                if pt1 is None: pt1 = item['p1']
-                if pt2 is None: pt2 = item['p2']
-                
-                geom_perp = QgsGeometry.fromPolylineXY([pt1, pt2])
                 perpendiculars.append({
-                    'geom': geom_perp,
+                    'geom': QgsGeometry.fromPolylineXY([pt1, pt2]),
                     'id': i + 1
                 })
             
@@ -316,22 +316,32 @@ class VectorUtils:
                 
                 if mother_line1_geom and mother_line2_geom:
                     # Cenário 1: Intersectar com as linhas mães
-                    ext = 10000.0 # Grande extensão para garantir intersecção
-                    rad1 = math.radians(perp_az)
-                    p_ext1 = QgsPointXY(p_curr.x() + ext * math.sin(rad1), p_curr.y() + ext * math.cos(rad1))
-                    rad2 = math.radians((perp_az + 180) % 360)
-                    p_ext2 = QgsPointXY(p_curr.x() + ext * math.sin(rad2), p_curr.y() + ext * math.cos(rad2))
-                    
-                    full_perp_line = QgsGeometry.fromPolylineXY([p_ext1, p_ext2])
-                    
-                    inter1 = mother_line1_geom.intersection(full_perp_line)
-                    inter2 = mother_line2_geom.intersection(full_perp_line)
-                    
-                    pt1 = VectorUtils._get_closest_point(inter1, p_curr)
-                    pt2 = VectorUtils._get_closest_point(inter2, p_curr)
+                    ext_max = 10000.0
+                    # Raio 1
+                    p_ext1 = QgsPointXY(p_curr.x() + ext_max * math.sin(math.radians(perp_az)), 
+                                        p_curr.y() + ext_max * math.cos(math.radians(perp_az)))
+                    ray1 = QgsGeometry.fromPolylineXY([p_curr, p_ext1])
+                    pts1 = []
+                    for m_geom in [mother_line1_geom, mother_line2_geom]:
+                        p_int = VectorUtils._get_closest_point(m_geom.intersection(ray1), p_curr)
+                        if p_int: pts1.append(p_int)
+                    pt1 = min(pts1, key=lambda p: p.distance(p_curr)) if pts1 else None
+
+                    # Raio 2
+                    p_ext2 = QgsPointXY(p_curr.x() + ext_max * math.sin(math.radians((perp_az + 180) % 360)))
+                    ray2 = QgsGeometry.fromPolylineXY([p_curr, p_ext2])
+                    pts2 = []
+                    for m_geom in [mother_line1_geom, mother_line2_geom]:
+                        p_int = VectorUtils._get_closest_point(m_geom.intersection(ray2), p_curr)
+                        if p_int: pts2.append(p_int)
+                    pt2 = min(pts2, key=lambda p: p.distance(p_curr)) if pts2 else None
                     
                     if pt1 and pt2:
                         perpendicular_geoms.append(QgsGeometry.fromPolylineXY([pt1, pt2]))
+                    elif pt1 or pt2:
+                        # Se apenas um lado intersectar, usamos a distância fixa para o outro lado para não entortar
+                        half = fixed_distance / 2.0 if fixed_distance else 10.0
+                        p_other = pt2 if pt1 else pt1 # Lógica de fallback para manter reta
                     elif feedback:
                         feedback.pushInfo(f"Falha na intersecção para vértice {i} da parte {part_idx}. Linha perpendicular não gerada.")
                 else:
