@@ -21,6 +21,18 @@ class VectorUtils:
         return new_geom
 
     @staticmethod
+    def reverse_geometry(geom):
+        """Inverte a direção de uma geometria linear (compatível com QGIS < 3.18)."""
+        if geom.isMultipart():
+            multi_poly = geom.asMultiPolyline()
+            # Inverte a ordem das partes e os vértices dentro de cada parte
+            reversed_multi = [part[::-1] for part in reversed(multi_poly)]
+            return QgsGeometry.fromMultiPolylineXY(reversed_multi)
+        else:
+            poly = geom.asPolyline()
+            return QgsGeometry.fromPolylineXY(poly[::-1])
+
+    @staticmethod
     def get_midpoint(p1, p2):
         """Calcula o ponto médio entre dois objetos QgsPointXY."""
         return QgsPointXY((p1.x() + p2.x()) / 2, (p1.y() + p2.y()) / 2)
@@ -68,10 +80,7 @@ class VectorUtils:
             return (pt.x(), -pt.y())
 
         if score_no(fim) < score_no(inicio):
-            # reverse() inverte a ordem dos vértices e das partes (no caso de multi)
-            new_geom = QgsGeometry(geom)
-            new_geom.reverse()
-            return new_geom
+            return VectorUtils.reverse_geometry(geom)
         return geom
 
     @staticmethod
@@ -122,9 +131,26 @@ class VectorUtils:
         Orquestra o fluxo completo de geração da linha mestra.
         Retorna (lista_segmentos_mestra, lista_conexoes_transversais).
         """
+        # 1. Normaliza a primeira linha para uma direção padrão (Noroeste)
         g1 = VectorUtils.orient_northwest(geom1)
-        g2 = VectorUtils.orient_northwest(geom2)
         
+        # 2. Garante que a segunda linha siga o mesmo sentido da primeira por proximidade
+        g2 = geom2
+        nodes1 = list(g1.vertices())
+        nodes2 = list(g2.vertices())
+        
+        if nodes1 and nodes2:
+            p1_start = QgsPointXY(nodes1[0].x(), nodes1[0].y())
+            p2_start = QgsPointXY(nodes2[0].x(), nodes2[0].y())
+            p2_end = QgsPointXY(nodes2[-1].x(), nodes2[-1].y())
+            
+            # Camada extra de validação:
+            # Se o início de g1 estiver mais perto do FIM de g2 do que do INÍCIO de g2,
+            # significa que g2 está invertida em relação ao par. Nós a corrigimos.
+            if p1_start.distance(p2_start) > p1_start.distance(p2_end):
+                g2 = VectorUtils.reverse_geometry(g2)
+        
+        # 3. Agora a interpolação ocorrerá entre pontos homólogos (início com início)
         dados = VectorUtils.calculate_interpolation_data(g1, g2, partitions, feedback)
         
         mestra_segments = []
