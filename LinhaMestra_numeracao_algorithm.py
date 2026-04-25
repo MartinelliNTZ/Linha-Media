@@ -17,7 +17,6 @@ __author__ = 'Iridium'
 __date__ = '2026-04-21'
 __copyright__ = '(C) 2026 by Iridium'
 
-import math
 from qgis.PyQt.QtCore import QCoreApplication, QVariant
 from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
@@ -33,6 +32,7 @@ from qgis.core import (QgsProcessing,
                        QgsField,
                        QgsPointXY,
                        QgsDistanceArea)
+from .vector_utils import VectorUtils
 
 class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
 
@@ -138,51 +138,21 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
         for feat in features:
             geom = feat.geometry()
             
-            # Trata tanto LineString quanto MultiLineString
-            parts = geom.asMultiPolyline() if geom.isMultipart() else [geom.asPolyline()]
-            
-            # Explode a linha em segmentos de todas as partes existentes
-            segment_azs = []
-            for part in parts:
-                if not part: continue
-                for i in range(len(part) - 1):
-                    segment_azs.append(part[i].azimuth(part[i+1]))
-            
-            if not segment_azs:
-                continue
-
-            is_straight = True
-            avg_az = 0
-            
-            # Se tem apenas 1 segmento (2 vértices), é obrigatoriamente reta
-            if len(segment_azs) == 1:
-                is_straight = True
-                avg_az = segment_azs[0]
-                feedback.pushInfo(f"Linha {feat.id()}: RETA (2 vértices, Az: {avg_az:.2f}°)")
-            else:
-                avg_az = sum(segment_azs) / len(segment_azs)
-                max_dev = 0
-                
-                # Verifica se o azimute médio passa do desvio aceitável
-                for az in segment_azs:
-                    diff = abs(az - avg_az)
-                    if diff > 180: diff = 360 - diff
-                    max_dev = max(max_dev, diff)
-                    if diff > desvio_tipo:
-                        is_straight = False
-                
-                tipo_str = "RETA" if is_straight else "CURVA"
-                feedback.pushInfo(f"Linha {feat.id()}: {tipo_str} (Média Az: {avg_az:.2f}°, Desvio Máx: {max_dev:.2f}°)")
+            # Processamento delegado para VectorUtils (Suporta Line e MultiLine)
+            is_straight, avg_az, max_dev = VectorUtils.analyze_straightness(geom, desvio_tipo)
+            tipo_str = "RETA" if is_straight else "CURVA"
+            feedback.pushInfo(f"Linha {feat.id()}: {tipo_str} (Média Az: {avg_az:.2f}°, Desvio Máx: {max_dev:.2f}°)")
             
             # Armazenamos a geometria original para o centroide
             centroid_pt = geom.centroid().asPoint()
             if centroid_pt.isEmpty(): # Fallback para linhas sem centroide válido
-                centroid_pt = parts[0][0]
+                nodes = list(geom.vertices())
+                centroid_pt = QgsPointXY(nodes[0].x(), nodes[0].y()) if nodes else QgsPointXY(0,0)
 
             line_data.append({
                 'feat': feat,
                 'fid': feat.id(),
-                'type': 'RETA' if is_straight else 'CURVA',
+                'type': tipo_str,
                 'azimuth': avg_az,
                 'centroid': centroid_pt,
                 'grupo_id': 0,
@@ -202,9 +172,8 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
                 if az_diff < desvio_seq:
                     p1 = line_data[i]['centroid']
                     p2 = line_data[j]['centroid']
-                    rad = math.radians(line_data[i]['azimuth'])
-                    v1 = -p1.x() * math.sin(rad) + p1.y() * math.cos(rad)
-                    v2 = -p2.x() * math.sin(rad) + p2.y() * math.cos(rad)
+                    v1 = VectorUtils.get_projection_value(p1, line_data[i]['azimuth'])
+                    v2 = VectorUtils.get_projection_value(p2, line_data[i]['azimuth'])
                     
                     if abs(v1 - v2) < tol_gps:
                         adj[i].append(j)
@@ -257,7 +226,6 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
             
             # IMPORTANTE: Para ordenar sem embaralhar, precisamos de um azimute de referência único para o grupo
             grupo_az_ref = sum(passadas_unidas[p_idx]['az'] for p_idx in bloco) / len(bloco)
-            rad_ref = math.radians(grupo_az_ref)
             
             feedback.pushInfo(f"Processando Grupo {g_idx}: {len(bloco)} passadas, Azimute Ref: {grupo_az_ref:.2f}°")
 
@@ -269,7 +237,7 @@ class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
                 for idx in passada['indices']:
                     p = line_data[idx]['centroid']
                     # Fórmula solicitada: valor = -x * sin(azimute) + y * cos(azimute)
-                    val = -p.x() * math.sin(rad_ref) + p.y() * math.cos(rad_ref)
+                    val = VectorUtils.get_projection_value(p, grupo_az_ref)
                     proj_vals.append(val)
                 
                 avg_proj = sum(proj_vals) / len(proj_vals)

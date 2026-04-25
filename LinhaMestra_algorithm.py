@@ -41,11 +41,9 @@ from qgis.core import (QgsProcessing,
                        QgsGeometry,
                        QgsFeature,
                        QgsWkbTypes,
-                       QgsCoordinateTransform,
-                       QgsCoordinateReferenceSystem,
-                       QgsPointXY,
                        QgsFields,
                        QgsField)
+from .vector_utils import VectorUtils
 
 class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     """
@@ -124,92 +122,15 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         source2 = self.parameterAsSource(parameters, self.INPUT_2, context)
         particoes = self.parameterAsInt(parameters, self.PARTICOES, context)
 
-        feicoes_camada1 = list(source.getFeatures())
-        linha1 = None
-        linha2 = None
+        # 1. Extração e Validação (Delegado para VectorUtils)
+        linha1, linha2, crs_final = VectorUtils.extract_two_features(source, source2, context)
+        if linha1 is None:
+            raise QgsProcessingException(self.tr('Erro de Seleção: Escolha 2 feições na mesma camada ou 1 em cada camada.'))
 
-        # Validação de Cenários
-        if source2 is None:
-            # Cenário 1: Duas feições na mesma camada
-            if len(feicoes_camada1) != 2:
-                raise QgsProcessingException(self.tr('Selecione exatamente 2 feições na camada de entrada.'))
-            linha1 = feicoes_camada1[0]
-            linha2 = feicoes_camada1[1]
-            crs_final = source.sourceCrs()
-        else:
-            # Cenário 2: Uma feição em cada camada
-            feicoes_camada2 = list(source2.getFeatures())
-            if len(feicoes_camada1) != 1 or len(feicoes_camada2) != 1:
-                raise QgsProcessingException(self.tr('Selecione exatamente 1 feição em cada camada.'))
-            
-            linha1 = feicoes_camada1[0]
-            linha2 = feicoes_camada2[0]
-            crs_final = source.sourceCrs()
-
-            # Garantir mesma projeção
-            if source.sourceCrs() != source2.sourceCrs():
-                feedback.pushInfo(self.tr('Reprojetando segunda camada para a projeção da primeira...'))
-                transform = QgsCoordinateTransform(source2.sourceCrs(), source.sourceCrs(), context.transformContext())
-                geom2 = linha2.geometry()
-                geom2.transform(transform)
-                linha2.setGeometry(geom2)
-
-        def orientar_noroeste(geom):
-            """Inverte a linha se o final for mais ao Norte/Oeste que o início."""
-            polyline = geom.asPolyline()
-            if not polyline:
-                return geom
-            
-            inicio = polyline[0]
-            fim = polyline[-1]
-
-            # Critério NO: Menor X (Oeste), se empate, maior Y (Norte)
-            def score_no(pt):
-                return (pt.x(), -pt.y())
-
-            if score_no(fim) < score_no(inicio):
-                feedback.pushInfo(self.tr('Invertendo direção da linha para alinhar ao Noroeste.'))
-                points = list(polyline)
-                points.reverse()
-                return QgsGeometry.fromPolylineXY(points)
-            return geom
-
-        geom1 = orientar_noroeste(linha1.geometry())
-        geom2 = orientar_noroeste(linha2.geometry())
-
-        # Gerar vértices fatiados
-        len1 = geom1.length()
-        len2 = geom2.length()
-        
-        # Otimização: Coletamos todos os pontos necessários em um único passo
-        dados_particao = []
-
-        for i in range(particoes + 1):
-            if feedback.isCanceled():
-                break
-            
-            d1 = (len1 / particoes) * i
-            d2 = (len2 / particoes) * i
-
-            g1 = geom1.interpolate(d1)
-            g2 = geom2.interpolate(d2)
-
-            if g1.isNull() or g2.isNull():
-                continue
-
-            p1 = g1.asPoint()
-            p2 = g2.asPoint()
-            dist_mae = p1.distance(p2)
-            centro = QgsPointXY((p1.x() + p2.x()) / 2, (p1.y() + p2.y()) / 2)
-            
-            dados_particao.append({
-                'p1': p1,
-                'p2': p2,
-                'centro': centro,
-                'dist': dist_mae
-            })
-            
-            feedback.setProgress(int((i / (particoes + 1)) * 50))
+        # 2. Processamento Geométrico Pesado (Delegado para VectorUtils)
+        mestra_results, conexao_results = VectorUtils.generate_linhamestra_elements(
+            linha1.geometry(), linha2.geometry(), particoes, feedback
+        )
 
         # Definir os campos de saída (ID do segmento)
         fields_mestra = QgsFields()
@@ -237,32 +158,21 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             crs_final
         )
 
-        # Criar as feições para cada pedaço (segmento)
-        total_pontos = len(dados_particao)
-        for i in range(total_pontos):
-            if feedback.isCanceled():
-                break
-            
-            item = dados_particao[i]
+        # 3. Escrita dos Resultados (Orquestração pura)
+        for i, res in enumerate(mestra_results):
+            if feedback.isCanceled(): break
+            feat_mestra = QgsFeature(fields_mestra)
+            feat_mestra.setGeometry(res['geom'])
+            feat_mestra.setAttribute('id_segmento', i + 1)
+            feat_mestra.setAttribute('dist_mae', res['dist'])
+            sink.addFeature(feat_mestra, QgsFeatureSink.FastInsert)
 
-            # 1. Gerar Segmento da Linha Mestra (conecta o centroide atual ao próximo)
-            if i < total_pontos - 1:
-                proximo = dados_particao[i+1]
-                geom_mestra = QgsGeometry.fromPolylineXY([item['centro'], proximo['centro']])
-                feat_mestra = QgsFeature(fields_mestra)
-                feat_mestra.setGeometry(geom_mestra)
-                feat_mestra.setAttribute('id_segmento', i + 1)
-                feat_mestra.setAttribute('dist_mae', item['dist'])
-                sink.addFeature(feat_mestra, QgsFeatureSink.FastInsert)
-
-            # 2. Gerar Linha de Conexão (Travessa transversal entre as linhas originais)
-            geom_conn = QgsGeometry.fromPolylineXY([item['p1'], item['p2']])
+        for i, geom_conn in enumerate(conexao_results):
+            if feedback.isCanceled(): break
             feat_conn = QgsFeature(fields_intermediate)
             feat_conn.setGeometry(geom_conn)
             feat_conn.setAttribute('id_conexao', i + 1)
             sink_intermediate.addFeature(feat_conn, QgsFeatureSink.FastInsert)
-            
-            feedback.setProgress(50 + int((i / total_pontos) * 50))
 
         return {self.OUTPUT: dest_id, self.INTERMEDIATE_LINES_OUTPUT: dest_id_intermediate}
 
