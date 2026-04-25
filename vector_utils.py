@@ -167,29 +167,38 @@ class VectorUtils:
         return None
 
     @staticmethod
+    def align_line_pair(geom1, geom2):
+        """
+        Prepara o 'casamento' das linhas:
+        1. Orienta a primeira para Noroeste.
+        2. Orienta a segunda para que seu início seja o mais próximo possível do início da primeira.
+        """
+        g1 = VectorUtils.orient_northwest(geom1)
+        
+        nodes1 = list(g1.vertices())
+        nodes2 = list(geom2.vertices())
+        
+        if not nodes1 or not nodes2:
+            return g1, geom2
+            
+        p1_start = QgsPointXY(nodes1[0].x(), nodes1[0].y())
+        p2_start = QgsPointXY(nodes2[0].x(), nodes2[0].y())
+        p2_end = QgsPointXY(nodes2[-1].x(), nodes2[-1].y())
+        
+        # Se o início da g1 está mais perto do fim da g2, inverte g2 para alinhar o par
+        if p1_start.distance(p2_start) > p1_start.distance(p2_end):
+            return g1, VectorUtils.reverse_geometry(geom2)
+            
+        return g1, geom2
+
+    @staticmethod
     def generate_linhamestra_elements(geom1, geom2, partitions, feedback=None):
         """
         Orquestra o fluxo completo de geração da linha mestra.
         Retorna (mestra, conexoes, perpendiculares, mais_proximo_1, mais_proximo_2).
         """
-        # 1. Normaliza a primeira linha para uma direção padrão (Noroeste)
-        g1 = VectorUtils.orient_northwest(geom1)
-        
-        # 2. Garante que a segunda linha siga o mesmo sentido da primeira por proximidade
-        g2 = geom2
-        nodes1 = list(g1.vertices())
-        nodes2 = list(g2.vertices())
-        
-        if nodes1 and nodes2:
-            p1_start = QgsPointXY(nodes1[0].x(), nodes1[0].y())
-            p2_start = QgsPointXY(nodes2[0].x(), nodes2[0].y())
-            p2_end = QgsPointXY(nodes2[-1].x(), nodes2[-1].y())
-            
-            # Camada extra de validação:
-            # Se o início de g1 estiver mais perto do FIM de g2 do que do INÍCIO de g2,
-            # significa que g2 está invertida em relação ao par. Nós a corrigimos.
-            if p1_start.distance(p2_start) > p1_start.distance(p2_end):
-                g2 = VectorUtils.reverse_geometry(g2)
+        # 1. Prepara o casamento (Alinhamento)
+        g1, g2 = VectorUtils.align_line_pair(geom1, geom2)
         
         # 3. Agora a interpolação ocorrerá entre pontos homólogos (início com início)
         dados = VectorUtils.calculate_interpolation_data(g1, g2, partitions, feedback)

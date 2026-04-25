@@ -125,29 +125,42 @@ class ConnectionJudge:
     def solve_nearest_with_criteria(geom1, geom2, criteria_idx):
         """
         Executa o julgamento para decidir qual linha será a base conforme o critério.
-        0: menor tamanho, 1: maior tamanho, 2: menor angulo, 3: maior angulo, 4: qualquer
+        Garante o alinhamento prévio das linhas para o 'casamento'.
         """
+        # 1. Alinhamento prévio para garantir que os vértices 0 coincidam espacialmente
+        g1, g2 = VectorUtils.align_line_pair(geom1, geom2)
+        
         use_g1_as_base = True
         
         if criteria_idx == 0: # Menor Tamanho
-            use_g1_as_base = geom1.length() <= geom2.length()
+            use_g1_as_base = g1.length() <= g2.length()
         elif criteria_idx == 1: # Maior Tamanho
-            use_g1_as_base = geom1.length() >= geom2.length()
+            use_g1_as_base = g1.length() >= g2.length()
         elif criteria_idx == 2: # Menor Ângulo (Mais fechada/curva)
-            use_g1_as_base = VectorUtils.get_line_straightness_score(geom1) <= VectorUtils.get_line_straightness_score(geom2)
+            use_g1_as_base = VectorUtils.get_line_straightness_score(g1) <= VectorUtils.get_line_straightness_score(g2)
         elif criteria_idx == 3: # Maior Ângulo (Mais aberta/reta)
-            use_g1_as_base = VectorUtils.get_line_straightness_score(geom1) >= VectorUtils.get_line_straightness_score(geom2)
-        # else: criteria_idx == 4 ou empate -> use_g1_as_base = True
+            use_g1_as_base = VectorUtils.get_line_straightness_score(g1) >= VectorUtils.get_line_straightness_score(g2)
 
         if use_g1_as_base:
-            results = ConnectionJudge.generate_nearest_with_orphans(geom1, geom2)
+            results = ConnectionJudge.generate_nearest_with_orphans(g1, g2)
+            # id_pai mapeia para g1, id_mae mapeia para g2
+            return [{
+                'geom': d['geom'], 
+                'id': i + 1,
+                'id_pai': d.get('id_pai', 0),
+                'id_mae': d.get('id_mae', 0),
+                'id_origem': d.get('sort_key', 0)
+            } for i, d in enumerate(results)]
         else:
-            results = ConnectionJudge.generate_nearest_with_orphans(geom2, geom1)
+            results = ConnectionJudge.generate_nearest_with_orphans(g2, g1)
+            # Invertemos os IDs no retorno para que 'Pai' sempre seja a Linha 1
+            # e 'Mae' sempre seja a Linha 2, independente de quem foi a base.
+            # Também invertemos a geometria da conexão para começar no Pai (g1).
+            return [{
+                'geom': VectorUtils.reverse_geometry(d['geom']), 
+                'id': i + 1,
+                'id_pai': d.get('id_mae', 0),
+                'id_mae': d.get('id_pai', 0),
+                'id_origem': d.get('sort_key', 0)
+            } for i, d in enumerate(results)]
             
-        return [{
-            'geom': d['geom'], 
-            'id': i + 1,
-            'id_pai': d.get('id_pai', 0),
-            'id_mae': d.get('id_mae', 0),
-            'id_origem': d.get('sort_key', 0)
-        } for i, d in enumerate(results)]
