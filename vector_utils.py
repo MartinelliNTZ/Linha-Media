@@ -126,10 +126,26 @@ class VectorUtils:
         return -point.x() * math.sin(rad) + point.y() * math.cos(rad)
 
     @staticmethod
+    def _get_closest_point(geom, ref_point):
+        """Extrai o ponto mais próximo de um ponto de referência a partir de uma geometria."""
+        if not geom or geom.isEmpty():
+            return None
+            
+        # O método nearestPoint é o mais robusto para encontrar a projeção em qualquer geometria.
+        # No QGIS 3.16, asPoint() garante o retorno de um QgsPointXY.
+        nearest_geom = geom.nearestPoint(QgsGeometry.fromPointXY(ref_point))
+        if not nearest_geom.isEmpty():
+            return nearest_geom.asPoint()
+            
+        # Fallback para vértices se nearestPoint falhar (converte explicitamente para PointXY)
+        verts = [QgsPointXY(v.x(), v.y()) for v in geom.vertices()]
+        return min(verts, key=lambda p: p.distance(ref_point)) if verts else None
+
+    @staticmethod
     def generate_linhamestra_elements(geom1, geom2, partitions, feedback=None):
         """
         Orquestra o fluxo completo de geração da linha mestra.
-        Retorna (lista_segmentos_mestra, lista_conexoes_transversais).
+        Retorna (lista_segmentos_mestra, lista_conexoes_transversais, lista_perpendiculares).
         """
         # 1. Normaliza a primeira linha para uma direção padrão (Noroeste)
         g1 = VectorUtils.orient_northwest(geom1)
@@ -153,31 +169,86 @@ class VectorUtils:
         # 3. Agora a interpolação ocorrerá entre pontos homólogos (início com início)
         dados = VectorUtils.calculate_interpolation_data(g1, g2, partitions, feedback)
         
+        if not dados:
+            if feedback: feedback.reportError("Falha ao gerar dados de interpolação.")
+            return [], [], []
+
         mestra_segments = []
         connections = []
+        perpendiculars = []
         
         total = len(dados)
         for i in range(total):
             if feedback and feedback.isCanceled(): break
             
             item = dados[i]
-            # Guardamos os dados brutos para o orquestrador montar as feições
+            p_curr = item['centro']
+
+            # 1. Gerar Segmento da Linha Mestra
             if i < total - 1:
                 proximo = dados[i+1]
-                geom_mestra = QgsGeometry.fromPolylineXY([item['centro'], proximo['centro']])
+                geom_mestra = QgsGeometry.fromPolylineXY([p_curr, proximo['centro']])
                 mestra_segments.append({
                     'geom': geom_mestra, 
                     'dist': item['dist'],
                     'id': i + 1
                 })
             
-            geom_conn = QgsGeometry.fromPolylineXY([item['p1'], item['p2']])
+            # 2. Gerar Conexão Direta (Interpolação simples)
             connections.append({
-                'geom': geom_conn,
+                'geom': QgsGeometry.fromPolylineXY([item['p1'], item['p2']]),
                 'id': i + 1
             })
             
-        return mestra_segments, connections
+            # 3. Gerar Linha Perpendicular (Bissetriz nos vértices da mestra)
+            if total >= 2:
+                # Cálculo do azimute local (direção da mestra)
+                if i == 0:
+                    # No início, usa a direção do primeiro segmento
+                    az_mestra = p_curr.azimuth(dados[i+1]['centro'])
+                elif i == total - 1:
+                    # No final, usa a direção do último segmento
+                    az_mestra = dados[i-1]['centro'].azimuth(p_curr)
+                else:
+                    az1 = dados[i-1]['centro'].azimuth(p_curr)
+                    az2 = p_curr.azimuth(dados[i+1]['centro'])
+                    diff = az2 - az1
+                    if diff > 180: diff -= 360 
+                    if diff < -180: diff += 360
+                    az_mestra = (az1 + diff / 2.0) % 360
+
+                perp_az = (az_mestra + 90) % 360
+                # Exagero maior para garantir que cruze as linhas mãe mesmo em curvas
+                ext = (item['dist'] + 1.0) * 10.0 
+                
+                rad1 = math.radians(perp_az)
+                p_ext1 = QgsPointXY(p_curr.x() + ext * math.sin(rad1), p_curr.y() + ext * math.cos(rad1))
+                rad2 = math.radians((perp_az + 180) % 360)
+                p_ext2 = QgsPointXY(p_curr.x() + ext * math.sin(rad2), p_curr.y() + ext * math.cos(rad2))
+                
+                full_perp = QgsGeometry.fromPolylineXY([p_ext1, p_ext2])
+                
+                # Tenta intersecção exata
+                inter1 = g1.intersection(full_perp)
+                inter2 = g2.intersection(full_perp)
+                
+                pt1 = VectorUtils._get_closest_point(inter1, p_curr)
+                pt2 = VectorUtils._get_closest_point(inter2, p_curr)
+                
+                # Fallback: Se a intersecção falhar, usamos o ponto interpolado original para não ficar vazio
+                if pt1 is None: pt1 = item['p1']
+                if pt2 is None: pt2 = item['p2']
+                
+                geom_perp = QgsGeometry.fromPolylineXY([pt1, pt2])
+                perpendiculars.append({
+                    'geom': geom_perp,
+                    'id': i + 1
+                })
+            
+            if feedback and i % 100 == 0:
+                feedback.pushInfo(f"Processando ponto {i}/{total}...")
+            
+        return mestra_segments, connections, perpendiculars
 
     @staticmethod
     def create_feature(geometry, fields, attributes):

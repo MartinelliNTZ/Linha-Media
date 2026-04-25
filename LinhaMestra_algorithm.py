@@ -67,6 +67,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
     INPUT_2 = 'INPUT_2'
     INTERMEDIATE_LINES_OUTPUT = 'INTERMEDIATE_LINES_OUTPUT'
+    PERPENDICULAR_OUTPUT = 'PERPENDICULAR_OUTPUT'
     PARTICOES = 'PARTICOES'
 
     def initAlgorithm(self, config):
@@ -117,6 +118,14 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             )
         )
 
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.PERPENDICULAR_OUTPUT,
+                self.tr('Linhas Perpendiculares (Bissetriz)'),
+                QgsProcessing.TypeVectorLine
+            )
+        )
+
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         source2 = self.parameterAsSource(parameters, self.INPUT_2, context)
@@ -128,7 +137,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             raise QgsProcessingException(self.tr('Erro de Seleção: Escolha 2 feições na mesma camada ou 1 em cada camada.'))
 
         # 2. Processamento Geométrico Pesado (Delegado para VectorUtils)
-        mestra_results, conexao_results = VectorUtils.generate_linhamestra_elements(
+        mestra_results, conexao_results, perp_results = VectorUtils.generate_linhamestra_elements(
             linha1.geometry(), linha2.geometry(), particoes, feedback
         )
 
@@ -158,22 +167,39 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             crs_final
         )
 
+        # Configurar o sink para as linhas perpendiculares
+        fields_perp = QgsFields()
+        fields_perp.append(QgsField('id_perp', QVariant.Int))
+        (sink_perp, dest_id_perp) = self.parameterAsSink(
+            parameters, self.PERPENDICULAR_OUTPUT, context, fields_perp, QgsWkbTypes.LineString, crs_final
+        )
+
         # 3. Escrita dos Resultados (Orquestração pura)
+        feedback.pushInfo(self.tr('Escrevendo feições na camada de saída...'))
         total_mestra = len(mestra_results)
         for i, res in enumerate(mestra_results):
             if feedback.isCanceled(): break
             feat_mestra = VectorUtils.create_feature(res['geom'], fields_mestra, [res['id'], res['dist']])
             sink.addFeature(feat_mestra, QgsFeatureSink.FastInsert)
-            feedback.setProgress(int((i / total_mestra) * 50))
+            feedback.setProgress(int((i / total_mestra) * 33))
 
         total_conn = len(conexao_results)
         for i, res_c in enumerate(conexao_results):
             if feedback.isCanceled(): break
             feat_conn = VectorUtils.create_feature(res_c['geom'], fields_intermediate, [res_c['id']])
             sink_intermediate.addFeature(feat_conn, QgsFeatureSink.FastInsert)
-            feedback.setProgress(50 + int((i / total_conn) * 50))
+            feedback.setProgress(33 + int((i / total_conn) * 33))
 
-        return {self.OUTPUT: dest_id, self.INTERMEDIATE_LINES_OUTPUT: dest_id_intermediate}
+        total_perp = len(perp_results)
+        for i, res_p in enumerate(perp_results):
+            if feedback.isCanceled(): break
+            feat_perp = VectorUtils.create_feature(res_p['geom'], fields_perp, [res_p['id']])
+            sink_perp.addFeature(feat_perp, QgsFeatureSink.FastInsert)
+            feedback.setProgress(66 + int((i / total_perp) * 34))
+
+        return {self.OUTPUT: dest_id, 
+                self.INTERMEDIATE_LINES_OUTPUT: dest_id_intermediate,
+                self.PERPENDICULAR_OUTPUT: dest_id_perp}
 
     def name(self):
         return 'linhamestra_gerador'

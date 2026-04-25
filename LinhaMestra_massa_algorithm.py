@@ -22,6 +22,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
     PARTICOES = 'PARTICOES'
     OUTPUT = 'OUTPUT'
     INTERMEDIATE_LINES_OUTPUT = 'INTERMEDIATE_LINES_OUTPUT'
+    PERPENDICULAR_OUTPUT = 'PERPENDICULAR_OUTPUT'
 
     def initAlgorithm(self, config):
         self.addParameter(QgsProcessingParameterFeatureSource(
@@ -45,6 +46,9 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
 
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.INTERMEDIATE_LINES_OUTPUT, self.tr('Conexões Geradas'), QgsProcessing.TypeVectorLine))
+
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.PERPENDICULAR_OUTPUT, self.tr('Linhas Perpendiculares Geradas'), QgsProcessing.TypeVectorLine))
 
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
@@ -86,6 +90,12 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
         (sink_conn, dest_id_conn) = self.parameterAsSink(
             parameters, self.INTERMEDIATE_LINES_OUTPUT, context, fields_conn, QgsWkbTypes.LineString, source.sourceCrs())
 
+        fields_perp = QgsFields()
+        if group_field: fields_perp.append(QgsField('grupo', QVariant.String))
+        fields_perp.append(QgsField('par_id', QVariant.Int))
+        (sink_perp, dest_id_perp) = self.parameterAsSink(
+            parameters, self.PERPENDICULAR_OUTPUT, context, fields_perp, QgsWkbTypes.LineString, source.sourceCrs())
+
         # 3. Processamento Iterativo por Grupo
         total_groups = len(grouped_data)
         for g_idx, (group_val, group_features) in enumerate(grouped_data.items()):
@@ -109,10 +119,13 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 f2 = group_features[i+1]
                 par_id = i + 1
 
-                # Processamento Geométrico delegado à Utils
-                mestra_res, conn_res = VectorUtils.generate_linhamestra_elements(
+                mestra_res, conn_res, perp_res = VectorUtils.generate_linhamestra_elements(
                     f1.geometry(), f2.geometry(), particoes, feedback
                 )
+
+                if not mestra_res:
+                    feedback.reportError(f"Falha ao gerar elementos para o par {par_id} no grupo {group_val}")
+                    continue
 
                 # Escrita dos Resultados
                 for res in mestra_res:
@@ -125,10 +138,17 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                     feat = VectorUtils.create_feature(res_c['geom'], fields_conn, attrs)
                     sink_conn.addFeature(feat, QgsFeatureSink.FastInsert)
 
+                for res_p in perp_res:
+                    attrs = [str(group_val), par_id] if group_field else [par_id]
+                    feat = VectorUtils.create_feature(res_p['geom'], fields_perp, attrs)
+                    sink_perp.addFeature(feat, QgsFeatureSink.FastInsert)
+
             # Progresso baseado nos grupos processados
             feedback.setProgress(int(((g_idx + 1) / total_groups) * 100))
 
-        return {self.OUTPUT: dest_id_mestra, self.INTERMEDIATE_LINES_OUTPUT: dest_id_conn}
+        return {self.OUTPUT: dest_id_mestra, 
+                self.INTERMEDIATE_LINES_OUTPUT: dest_id_conn,
+                self.PERPENDICULAR_OUTPUT: dest_id_perp}
 
     def name(self):
         return 'linhamestra_gerador_massa'
