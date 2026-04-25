@@ -35,6 +35,7 @@ from .LinhaMestra_algorithm import LinhaMestraAlgorithm
 from .LinhaMestra_numeracao_algorithm import LinhaMestraNumeracaoAlgorithm
 from .LinhaMestra_perpendicular_algorithm import LinhaPerpendicularMediaAlgorithm
 from .LinhaMestra_massa_algorithm import LinhaMestraMassaAlgorithm
+from .LinhaMestra_extensao_algorithm import LinhaMestraExtensaoAlgorithm
 
 
 class LinhaMestraProvider(QgsProcessingProvider):
@@ -60,6 +61,7 @@ class LinhaMestraProvider(QgsProcessingProvider):
         self.addAlgorithm(LinhaMestraNumeracaoAlgorithm())
         self.addAlgorithm(LinhaPerpendicularMediaAlgorithm())
         self.addAlgorithm(LinhaMestraMassaAlgorithm())
+        self.addAlgorithm(LinhaMestraExtensaoAlgorithm())
 
     def id(self):
         """
