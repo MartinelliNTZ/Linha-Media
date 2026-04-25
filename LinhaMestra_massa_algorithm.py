@@ -22,11 +22,11 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
     ORDER_FIELD = 'ORDER_FIELD'
     GROUP_FIELD = 'GROUP_FIELD'
     PARTICOES = 'PARTICOES'
-    OUTPUT = 'OUTPUT'
-    INTERMEDIATE_LINES_OUTPUT = 'INTERMEDIATE_LINES_OUTPUT'
-    PERPENDICULAR_OUTPUT = 'PERPENDICULAR_OUTPUT'
-    NEAREST_OUTPUT = 'NEAREST_OUTPUT'
+    ESTILO_CONEXAO = 'ESTILO_CONEXAO'
+    ESTILO_LINHA_MESTRA = 'ESTILO_LINHA_MESTRA'
     CRITERIO_PROXIMIDADE = 'CRITERIO_PROXIMIDADE'
+    OUTPUT = 'OUTPUT'
+    CONEXAO_OUTPUT = 'CONEXAO_OUTPUT'
 
     def initAlgorithm(self, config):
         self.addParameter(QgsProcessingParameterFeatureSource(
@@ -47,22 +47,32 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
 
         self.addParameter(
             QgsProcessingParameterEnum(
+                self.ESTILO_CONEXAO,
+                self.tr('Estilo de Conexão'),
+                options=['Proximidade', 'Perpendicular', 'Conexão Direta (Ponto a Ponto)'],
+                defaultValue=0))
+
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.ESTILO_LINHA_MESTRA,
+                self.tr('Estilo da Linha Mestra'),
+                options=['Interpolação (Ponto a Ponto)', 'Proximidade (Média Espacial)'],
+                defaultValue=1))
+
+        self.addParameter(
+            QgsProcessingParameterEnum(
                 self.CRITERIO_PROXIMIDADE,
                 self.tr('Critério de Proximidade (Escolha da Base)'),
                 options=['Menor Tamanho', 'Maior Tamanho', 'Menor Ângulo', 'Maior Ângulo', 'Qualquer uma'],
                 defaultValue=0))
 
-        self.addParameter(QgsProcessingParameterFeatureSink(
-            self.OUTPUT, self.tr('Linhas Mestras Geradas'), QgsProcessing.TypeVectorLine))
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.OUTPUT, self.tr('Linhas Mestras'), QgsProcessing.TypeVectorLine))
 
-        self.addParameter(QgsProcessingParameterFeatureSink(
-            self.INTERMEDIATE_LINES_OUTPUT, self.tr('Conexões Geradas'), QgsProcessing.TypeVectorLine))
-
-        self.addParameter(QgsProcessingParameterFeatureSink(
-            self.PERPENDICULAR_OUTPUT, self.tr('Linhas Perpendiculares Geradas'), QgsProcessing.TypeVectorLine))
-
-        self.addParameter(QgsProcessingParameterFeatureSink(
-            self.NEAREST_OUTPUT, self.tr('Menor Distância (Proximidade)'), QgsProcessing.TypeVectorLine))
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.CONEXAO_OUTPUT, self.tr('Conexões'), QgsProcessing.TypeVectorLine))
 
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
@@ -71,6 +81,8 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
         group_field = self.parameterAsString(parameters, self.GROUP_FIELD, context)
         particoes = self.parameterAsInt(parameters, self.PARTICOES, context)
         criterio = self.parameterAsInt(parameters, self.CRITERIO_PROXIMIDADE, context)
+        estilo_conn = self.parameterAsInt(parameters, self.ESTILO_CONEXAO, context)
+        estilo_mestra = self.parameterAsInt(parameters, self.ESTILO_LINHA_MESTRA, context)
 
         # 1. Coletar e Organizar Grupos
         features = list(source.getFeatures())
@@ -97,26 +109,16 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
         (sink_mestra, dest_id_mestra) = self.parameterAsSink(
             parameters, self.OUTPUT, context, fields_mestra, QgsWkbTypes.LineString, source.sourceCrs())
 
-        fields_conn = QgsFields()
+        fields_conexao = QgsFields()
         if group_field:
-            fields_conn.append(QgsField('grupo', QVariant.String))
-        fields_conn.append(QgsField('par_id', QVariant.Int))
-        
-        (sink_conn, dest_id_conn) = self.parameterAsSink(
-            parameters, self.INTERMEDIATE_LINES_OUTPUT, context, fields_conn, QgsWkbTypes.LineString, source.sourceCrs())
+            fields_conexao.append(QgsField('grupo', QVariant.String))
+        fields_conexao.append(QgsField('id_conexao', QVariant.Int))
+        fields_conexao.append(QgsField('id_pai', QVariant.Double))
+        fields_conexao.append(QgsField('id_mae', QVariant.Double))
+        fields_conexao.append(QgsField('id_origem', QVariant.Double))
 
-        fields_perp = QgsFields()
-        if group_field: fields_perp.append(QgsField('grupo', QVariant.String))
-        fields_perp.append(QgsField('par_id', QVariant.Int))
-        (sink_perp, dest_id_perp) = self.parameterAsSink(
-            parameters, self.PERPENDICULAR_OUTPUT, context, fields_perp, QgsWkbTypes.LineString, source.sourceCrs())
-
-        fields_near = QgsFields()
-        if group_field: fields_near.append(QgsField('grupo', QVariant.String))
-        fields_near.append(QgsField('par_id', QVariant.Int))
-        
-        (sink_near, dest_id_near) = self.parameterAsSink(
-            parameters, self.NEAREST_OUTPUT, context, fields_near, QgsWkbTypes.LineString, source.sourceCrs())
+        (sink_conexao, dest_id_conexao) = self.parameterAsSink(
+            parameters, self.CONEXAO_OUTPUT, context, fields_conexao, QgsWkbTypes.LineString, source.sourceCrs())
 
         # 3. Processamento Iterativo por Grupo
         total_groups = len(grouped_data)
@@ -140,50 +142,73 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 f1 = group_features[i]
                 f2 = group_features[i+1]
                 par_id = i + 1
+                
+                # A. Alinhamento e Casamento de Pontas
+                g1, g2 = VectorUtils.align_line_pair(f1.geometry(), f2.geometry())
 
-                # Cálculo dinâmico do alvo de partições para este par
-                v_count1 = sum(1 for _ in f1.geometry().vertices())
-                v_count2 = sum(1 for _ in f2.geometry().vertices())
+                # B. Cálculo dinâmico do alvo de partições
+                v_count1 = sum(1 for _ in g1.vertices())
+                v_count2 = sum(1 for _ in g2.vertices())
                 target_n = max(particoes, v_count1 - 1, v_count2 - 1)
 
-                # 1. Processamento Geométrico (Mestra, Conexões, Perpendiculares)
-                mestra_res, conn_res, perp_res = VectorUtils.generate_linhamestra_elements(
-                    f1.geometry(), f2.geometry(), target_n, feedback
-                )
+                # C. Pipeline Otimizada
+                needs_near = (estilo_mestra == 1 or estilo_conn == 0)
+                needs_interp = (estilo_mestra == 0 or estilo_conn == 2 or estilo_conn == 1)
                 
-                # 2. Julgamento de Proximidade (Nearest)
-                near_res = ConnectionJudge.solve_nearest_with_criteria(
-                    f1.geometry(), f2.geometry(), criterio, target_n)
+                near_conns = []
+                interp_conns = []
+                perp_results = []
 
-                # Escrita dos Resultados
-                for res in mestra_res:
+                if needs_near:
+                    near_conns = ConnectionJudge.solve_nearest_with_criteria(g1, g2, criterio, target_n)
+                    near_conns = VectorUtils.filter_connections(near_conns, g1, g2, source.sourceCrs())
+
+                if needs_interp:
+                    m_res, c_res, p_res = VectorUtils.generate_linhamestra_elements(g1, g2, target_n, feedback)
+                    interp_conns = VectorUtils.filter_connections(c_res, g1, g2, source.sourceCrs())
+                    perp_results = p_res
+
+                # D. Definir Mestra e Conexão de Saída para este par
+                if estilo_mestra == 1:
+                    mestra_final_par = VectorUtils.generate_mestra_from_connections(near_conns)
+                else:
+                    mestra_final_par = VectorUtils.generate_mestra_from_connections(interp_conns)
+
+                if estilo_conn == 0:
+                    conexao_par = near_conns
+                elif estilo_conn == 1:
+                    conexao_par = perp_results
+                else:
+                    conexao_par = interp_conns
+
+                # E. Escrita dos Resultados no Sink
+                for res in mestra_final_par:
                     attrs = [str(group_val), par_id, res['dist']] if group_field else [par_id, res['dist']]
                     feat = VectorUtils.create_feature(res['geom'], fields_mestra, attrs)
                     sink_mestra.addFeature(feat, QgsFeatureSink.FastInsert)
 
-                for res_c in conn_res:
-                    attrs = [str(group_val), par_id] if group_field else [par_id]
-                    feat = VectorUtils.create_feature(res_c['geom'], fields_conn, attrs)
-                    sink_conn.addFeature(feat, QgsFeatureSink.FastInsert)
-
-                for res_p in perp_res:
-                    attrs = [str(group_val), par_id] if group_field else [par_id]
-                    feat = VectorUtils.create_feature(res_p['geom'], fields_perp, attrs)
-                    sink_perp.addFeature(feat, QgsFeatureSink.FastInsert)
-
-                for res_n in near_res:
-                    attrs = [str(group_val), par_id] if group_field else [par_id]
-                    feat = VectorUtils.create_feature(res_n['geom'], fields_near, attrs)
-                    sink_near.addFeature(feat, QgsFeatureSink.FastInsert)
+                for res_c in conexao_par:
+                    attrs_c = [
+                        str(group_val),
+                        res_c.get('id', 0),
+                        res_c.get('id_pai', 0),
+                        res_c.get('id_mae', 0),
+                        res_c.get('id_origem', 0)
+                    ] if group_field else [
+                        res_c.get('id', 0),
+                        res_c.get('id_pai', 0),
+                        res_c.get('id_mae', 0),
+                        res_c.get('id_origem', 0)
+                    ]
+                    feat_c = VectorUtils.create_feature(res_c['geom'], fields_conexao, attrs_c)
+                    sink_conexao.addFeature(feat_c, QgsFeatureSink.FastInsert)
 
             # Progresso baseado nos grupos processados
             feedback.setProgress(int(((g_idx + 1) / total_groups) * 100))
 
         return {
             self.OUTPUT: dest_id_mestra, 
-            self.INTERMEDIATE_LINES_OUTPUT: dest_id_conn,
-            self.PERPENDICULAR_OUTPUT: dest_id_perp,
-            self.NEAREST_OUTPUT: dest_id_near
+            self.CONEXAO_OUTPUT: dest_id_conexao
         }
 
     def name(self):
