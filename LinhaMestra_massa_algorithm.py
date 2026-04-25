@@ -18,6 +18,7 @@ from .vector_utils import VectorUtils
 class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
     ORDER_FIELD = 'ORDER_FIELD'
+    GROUP_FIELD = 'GROUP_FIELD'
     PARTICOES = 'PARTICOES'
     OUTPUT = 'OUTPUT'
     INTERMEDIATE_LINES_OUTPUT = 'INTERMEDIATE_LINES_OUTPUT'
@@ -29,6 +30,11 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterField(
             self.ORDER_FIELD, self.tr('Campo de Ordenação (Sequência)'), 
             parentLayerParameterName=self.INPUT))
+
+        self.addParameter(QgsProcessingParameterField(
+            self.GROUP_FIELD, self.tr('Campo de Agrupamento (Opcional)'), 
+            parentLayerParameterName=self.INPUT,
+            optional=True))
 
         self.addParameter(QgsProcessingParameterNumber(
             self.PARTICOES, self.tr('Número de Partiçôes'),
@@ -44,20 +50,28 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         # Em QGIS 3.16 usamos parameterAsString para obter o nome do campo
         order_field = self.parameterAsString(parameters, self.ORDER_FIELD, context)
+        group_field = self.parameterAsString(parameters, self.GROUP_FIELD, context)
         particoes = self.parameterAsInt(parameters, self.PARTICOES, context)
 
-        # 1. Coletar e Ordenar Feições
+        # 1. Coletar e Organizar Grupos
         features = list(source.getFeatures())
-        if len(features) < 2:
-            raise QgsProcessingException(self.tr('A camada deve conter pelo menos 2 feições para processamento em massa.'))
+        grouped_data = {}
 
-        # Ordenação baseada no atributo escolhido
-        features.sort(key=lambda f: f.attribute(order_field))
-        
-        feedback.pushInfo(self.tr(f'Iniciando processamento de {len(features)} feições ordenadas por "{order_field}"...'))
+        if group_field:
+            feedback.pushInfo(self.tr(f'Agrupando feições pelo campo: {group_field}'))
+            for f in features:
+                group_val = f.attribute(group_field)
+                if group_val not in grouped_data:
+                    grouped_data[group_val] = []
+                grouped_data[group_val].append(f)
+        else:
+            feedback.pushInfo(self.tr('Processando todas as feições como um único grupo.'))
+            grouped_data['unico'] = features
 
         # 2. Configurar Sinks
         fields_mestra = QgsFields()
+        if group_field:
+            fields_mestra.append(QgsField('grupo', QVariant.String))
         fields_mestra.append(QgsField('par_id', QVariant.Int))
         fields_mestra.append(QgsField('dist_mae', QVariant.Double))
         
@@ -65,39 +79,54 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
             parameters, self.OUTPUT, context, fields_mestra, QgsWkbTypes.LineString, source.sourceCrs())
 
         fields_conn = QgsFields()
+        if group_field:
+            fields_conn.append(QgsField('grupo', QVariant.String))
         fields_conn.append(QgsField('par_id', QVariant.Int))
         
         (sink_conn, dest_id_conn) = self.parameterAsSink(
             parameters, self.INTERMEDIATE_LINES_OUTPUT, context, fields_conn, QgsWkbTypes.LineString, source.sourceCrs())
 
-        # 3. Processamento em Pares (Loop de Massa)
-        num_pares = len(features) - 1
-        for i in range(num_pares):
+        # 3. Processamento Iterativo por Grupo
+        total_groups = len(grouped_data)
+        for g_idx, (group_val, group_features) in enumerate(grouped_data.items()):
             if feedback.isCanceled():
                 break
+
+            if len(group_features) < 2:
+                feedback.pushInfo(self.tr(f'Grupo "{group_val}" ignorado por possuir menos de 2 feições.'))
+                continue
+
+            # Ordenação dentro do grupo
+            group_features.sort(key=lambda f: f.attribute(order_field))
+            num_pares = len(group_features) - 1
             
-            f1 = features[i]
-            f2 = features[i+1]
-            par_id = i + 1
+            feedback.pushInfo(self.tr(f'Processando Grupo: {group_val} ({num_pares} pares)'))
 
-            feedback.pushInfo(self.tr(f'Processando par {par_id}: {f1.attribute(order_field)} -> {f2.attribute(order_field)}'))
+            for i in range(num_pares):
+                if feedback.isCanceled(): break
+                
+                f1 = group_features[i]
+                f2 = group_features[i+1]
+                par_id = i + 1
 
-            # Processamento Geométrico
-            mestra_res, conn_res = VectorUtils.generate_linhamestra_elements(
-                f1.geometry(), f2.geometry(), particoes, feedback
-            )
+                # Processamento Geométrico delegado à Utils
+                mestra_res, conn_res = VectorUtils.generate_linhamestra_elements(
+                    f1.geometry(), f2.geometry(), particoes, feedback
+                )
 
-            # Escrita dos Resultados via Utils
-            for res in mestra_res:
-                feat = VectorUtils.create_feature(res['geom'], fields_mestra, [par_id, res['dist']])
-                sink_mestra.addFeature(feat, QgsFeatureSink.FastInsert)
+                # Escrita dos Resultados
+                for res in mestra_res:
+                    attrs = [str(group_val), par_id, res['dist']] if group_field else [par_id, res['dist']]
+                    feat = VectorUtils.create_feature(res['geom'], fields_mestra, attrs)
+                    sink_mestra.addFeature(feat, QgsFeatureSink.FastInsert)
 
-            for res_c in conn_res:
-                feat = VectorUtils.create_feature(res_c['geom'], fields_conn, [par_id])
-                sink_conn.addFeature(feat, QgsFeatureSink.FastInsert)
+                for res_c in conn_res:
+                    attrs = [str(group_val), par_id] if group_field else [par_id]
+                    feat = VectorUtils.create_feature(res_c['geom'], fields_conn, attrs)
+                    sink_conn.addFeature(feat, QgsFeatureSink.FastInsert)
 
-            # Atualiza progresso global baseado no número de pares
-            feedback.setProgress(int(((i + 1) / num_pares) * 100))
+            # Progresso baseado nos grupos processados
+            feedback.setProgress(int(((g_idx + 1) / total_groups) * 100))
 
         return {self.OUTPUT: dest_id_mestra, self.INTERMEDIATE_LINES_OUTPUT: dest_id_conn}
 
