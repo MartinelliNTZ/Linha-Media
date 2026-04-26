@@ -8,6 +8,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingException,
                        QgsProcessingParameterNumber,
+                       QgsProcessingParameterEnum,
                        QgsWkbTypes,
                        QgsGeometry,
                        QgsFeature,
@@ -22,6 +23,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_AXES = 'OUTPUT_AXES'
     OUTPUT_CLASSIFIERS = 'OUTPUT_CLASSIFIERS'
     THRESHOLD = 'THRESHOLD'
+    AXIS_MODE = 'AXIS_MODE'
 
     def tr(self, string):
         return QCoreApplication.translate('LinhaMestraClassificacaoAlgorithm', string)
@@ -64,16 +66,39 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
                 QgsProcessing.TypeVectorLine
             )
         )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.AXIS_MODE,
+                self.tr('Modo de Geração de Eixos'),
+                options=['Ponto a Ponto (Morfologia Real)', 'Eixos Fixos (Grid Ortogonal)'],
+                defaultValue=1
+            )
+        )
         self.addParameter(QgsProcessingParameterFeatureSink(self.OUTPUT_AXES, self.tr('Eixos Cardeais'), QgsProcessing.TypeVectorLine))
         self.addParameter(QgsProcessingParameterFeatureSink(self.OUTPUT_CLASSIFIERS, self.tr('Linhas Classificadoras (Offsets)'), QgsProcessing.TypeVectorLine))
 
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         threshold = self.parameterAsDouble(parameters, self.THRESHOLD, context)
+        axis_mode = self.parameterAsInt(parameters, self.AXIS_MODE, context)
 
         # 1. Obter Pontos Extremos e Criar Eixos
-        geoms = [f.geometry() for f in source.getFeatures()]
-        pts = VectorUtils.get_8_cardinal_points(geoms)
+        if axis_mode == 1: # Eixos Fixos
+            extent = source.sourceExtent()
+            mp = extent.center()
+            pts = {
+                'N': QgsPointXY(mp.x(), extent.yMaximum()),
+                'S': QgsPointXY(mp.x(), extent.yMinimum()),
+                'L': QgsPointXY(extent.xMaximum(), mp.y()),
+                'O': QgsPointXY(extent.xMinimum(), mp.y()),
+                'NO': QgsPointXY(extent.xMinimum(), extent.yMaximum()),
+                'SE': QgsPointXY(extent.xMaximum(), extent.yMinimum()),
+                'SO': QgsPointXY(extent.xMinimum(), extent.yMinimum()),
+                'NE': QgsPointXY(extent.xMaximum(), extent.yMaximum())
+            }
+        else: # Ponto a Ponto
+            geoms = [f.geometry() for f in source.getFeatures()]
+            pts = VectorUtils.get_8_cardinal_points(geoms)
         
         axis_pairs = [
             ('N*S', [pts['N'], pts['S']]),
@@ -107,8 +132,28 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         ))
 
         # 3. Ponto de Cruzamento e Offsets
-        inter_pt = VectorUtils.get_line_intersection(primary['pts'], secondary['pts'])
-        if not inter_pt: inter_pt = VectorUtils.get_midpoint(primary['pts'][0], primary['pts'][1])
+        # Calculamos os vetores de translação para centralizar sem deslocar o sentido original
+        mp = VectorUtils.get_midpoint(primary['pts'][0], primary['pts'][1])
+        ms = VectorUtils.get_midpoint(secondary['pts'][0], secondary['pts'][1])
+
+        # Vetores unitários normais (perpendiculares)
+        dp = primary['pts'][1].x() - primary['pts'][0].x(), primary['pts'][1].y() - primary['pts'][0].y()
+        ds = secondary['pts'][1].x() - secondary['pts'][0].x(), secondary['pts'][1].y() - secondary['pts'][0].y()
+        
+        # Normal perpendicular à primária: (-dy, dx)
+        up_x, up_y = -dp[1]/primary['len'], dp[0]/primary['len']
+        # Normal perpendicular à secundária: (-dy, dx)
+        us_x, us_y = -ds[1]/secondary['len'], ds[0]/secondary['len']
+
+        # Projeção do vetor (ms - mp) sobre a normal da primária para mover APENAS lateralmente
+        v_diff = ms.x() - mp.x(), ms.y() - mp.y()
+        dot_p = v_diff[0] * up_x + v_diff[1] * up_y
+        center_pri_pts = VectorUtils.translate_line(primary['pts'], up_x * dot_p, up_y * dot_p)
+
+        # Projeção do vetor (mp - ms) sobre a normal da secundária
+        v_diff_s = mp.x() - ms.x(), mp.y() - ms.y()
+        dot_s = v_diff_s[0] * us_x + v_diff_s[1] * us_y
+        center_sec_pts = VectorUtils.translate_line(secondary['pts'], us_x * dot_s, us_y * dot_s)
 
         # OUTPUT 2: Classificadores
         fields_class = source.fields()
@@ -116,38 +161,24 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         fields_class.append(QgsField('axis_type', QVariant.String))
         (sink_class, dest_class) = self.parameterAsSink(parameters, self.OUTPUT_CLASSIFIERS, context, fields_class, QgsWkbTypes.LineString, source.sourceCrs())
 
-        # Gerar 21 Offsets da Primária (Varredura Lateral - lclas)
+        # Gerar 21 Offsets da Primária (Varredura - lnPri)
         primary_offsets = []
-        d1_s = inter_pt.distance(secondary['pts'][0])
-        d2_s = inter_pt.distance(secondary['pts'][1])
-        max_dist_s = max(d1_s, d2_s)
-        step_s = max_dist_s / 9.0
-
-        dx_p = primary['pts'][1].x() - primary['pts'][0].x()
-        dy_p = primary['pts'][1].y() - primary['pts'][0].y()
-        ux_p, uy_p = -dy_p/primary['len'], dx_p/primary['len']
+        step_pri = (secondary['len'] / 2.0) / 9.0
 
         for i in range(-10, 11):
-            off_pts = VectorUtils.translate_line(primary['pts'], ux_p * step_s * i, uy_p * step_s * i)
+            off_pts = VectorUtils.translate_line(center_pri_pts, up_x * step_pri * i, up_y * step_pri * i)
             primary_offsets.append(off_pts)
             f = QgsFeature(fields_class)
             f.setGeometry(QgsGeometry.fromPolylineXY(off_pts))
             f.setAttributes([None]*len(source.fields()) + [i, 'PRIMARY'])
             sink_class.addFeature(f)
 
-        # Gerar 21 Offsets da Secundária (Varredura Longitudinal - pclas)
+        # Gerar 21 Offsets da Secundária (Varredura - lnSec)
         secondary_offsets = []
-        d1_p = inter_pt.distance(primary['pts'][0])
-        d2_p = inter_pt.distance(primary['pts'][1])
-        max_dist_p = max(d1_p, d2_p)
-        step_p = max_dist_p / 9.0
-
-        dx_s = secondary['pts'][1].x() - secondary['pts'][0].x()
-        dy_s = secondary['pts'][1].y() - secondary['pts'][0].y()
-        ux_s, uy_s = -dy_s/secondary['len'], dx_s/secondary['len']
+        step_sec = (primary['len'] / 2.0) / 9.0
 
         for i in range(-10, 11):
-            off_pts = VectorUtils.translate_line(secondary['pts'], ux_s * step_p * i, uy_s * step_p * i)
+            off_pts = VectorUtils.translate_line(center_sec_pts, us_x * step_sec * i, us_y * step_sec * i)
             secondary_offsets.append(off_pts)
             f = QgsFeature(fields_class)
             f.setGeometry(QgsGeometry.fromPolylineXY(off_pts))
@@ -158,26 +189,25 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         fields_lines = source.fields()
         fields_lines.append(QgsField('tipo_line', QVariant.String))
         
-        # Adiciona os 21 + 21 campos de classificação
+        # Nomes dos atributos atualizados: lnPri0...20 e lnSec0...20
         for i in range(21):
-            fields_lines.append(QgsField(f'lclas{i}', QVariant.Int))
+            fields_lines.append(QgsField(f'lnPri{i}', QVariant.Int))
         for i in range(21):
-            fields_lines.append(QgsField(f'pclas{i}', QVariant.Int))
+            fields_lines.append(QgsField(f'lnSec{i}', QVariant.Int))
             
-        fields_lines.append(QgsField('soma_l', QVariant.Double))
-        fields_lines.append(QgsField('media_l', QVariant.Double))
-        fields_lines.append(QgsField('soma_p', QVariant.Double))
-        fields_lines.append(QgsField('media_p', QVariant.Double))
+        fields_lines.append(QgsField('soma_pri', QVariant.Double))
+        fields_lines.append(QgsField('media_pri', QVariant.Double))
+        fields_lines.append(QgsField('soma_sec', QVariant.Double))
+        fields_lines.append(QgsField('media_sec', QVariant.Double))
 
         (sink_lines, dest_lines) = self.parameterAsSink(parameters, self.OUTPUT_LINES, context, fields_lines, QgsWkbTypes.LineString, source.sourceCrs())
 
-        # Regra de sentido: Qual ponto da linha de offset é o "Início"?
-        # Ex: N*S = Começa no Norte.
         def get_scan_start_pt(line_pts, axis_name):
-            if axis_name == 'N*S': return max(line_pts, key=lambda p: p.y())
-            if axis_name == 'L*O': return min(line_pts, key=lambda p: p.x()) # Oeste
-            if axis_name == 'NO*SE': return min(line_pts, key=lambda p: p.x() - p.y())
-            if axis_name == 'SO*NE': return max(line_pts, key=lambda p: p.x() + p.y()) # Nordeste
+            """Define o ponto zero da régua de escaneamento baseada na regra cardinal."""
+            if axis_name == 'N*S': return max(line_pts, key=lambda p: p.y()) # Começa no Norte
+            if axis_name == 'L*O': return min(line_pts, key=lambda p: p.x()) # Começa no Oeste
+            if axis_name == 'NO*SE': return min(line_pts, key=lambda p: (p.x() - p.y())) # Noroeste
+            if axis_name == 'SO*NE': return max(line_pts, key=lambda p: (p.x() + p.y())) # Nordeste (topo direito)
             return line_pts[0]
 
         contour_features = list(source.getFeatures())
@@ -186,7 +216,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         results_l = {f.id(): {i: 0 for i in range(21)} for f in contour_features}
         results_p = {f.id(): {i: 0 for i in range(21)} for f in contour_features}
 
-        # Escaneamento Varredura Lateral (Offsets da Primária -> lclas)
+        # Escaneamento Varredura Lateral (lnPri)
         for c_idx, c_line in enumerate(primary_offsets):
             c_geom = QgsGeometry.fromPolylineXY(c_line)
             start_pt = get_scan_start_pt(c_line, primary['name'])
@@ -194,13 +224,15 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             for feat in contour_features:
                 inter = c_geom.intersection(feat.geometry())
                 if not inter.isEmpty():
-                    impact_pt = inter.asMultiPoint()[0] if inter.isMultipart() else inter.asPoint()
-                    hits.append((feat.id(), start_pt.distance(impact_pt)))
+                    # Pega o ponto de intersecção mais próximo do início do escaneamento
+                    impact_pt = VectorUtils._get_closest_point(inter, start_pt)
+                    if impact_pt:
+                        hits.append((feat.id(), start_pt.distance(impact_pt)))
             hits.sort(key=lambda x: x[1])
             for rank, (fid, _) in enumerate(hits, 1):
                 results_l[fid][c_idx] = rank
 
-        # Escaneamento Varredura Longitudinal (Offsets da Secundária -> pclas)
+        # Escaneamento Varredura Longitudinal (lnSec)
         for c_idx, c_line in enumerate(secondary_offsets):
             c_geom = QgsGeometry.fromPolylineXY(c_line)
             start_pt = get_scan_start_pt(c_line, secondary['name'])
@@ -208,8 +240,9 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             for feat in contour_features:
                 inter = c_geom.intersection(feat.geometry())
                 if not inter.isEmpty():
-                    impact_pt = inter.asMultiPoint()[0] if inter.isMultipart() else inter.asPoint()
-                    hits.append((feat.id(), start_pt.distance(impact_pt)))
+                    impact_pt = VectorUtils._get_closest_point(inter, start_pt)
+                    if impact_pt:
+                        hits.append((feat.id(), start_pt.distance(impact_pt)))
             hits.sort(key=lambda x: x[1])
             for rank, (fid, _) in enumerate(hits, 1):
                 results_p[fid][c_idx] = rank
@@ -219,28 +252,29 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             out_f = QgsFeature(fields_lines)
             out_f.setGeometry(feat.geometry())
             
+            # Classificação Morfológica (Tipo de Curva)
             tipo, _, _ = VectorUtils.classify_line_morphology(feat.geometry(), threshold)
             
-            # Coleta as notas lclas e pclas
             notas_l = [results_l[feat.id()][i] for i in range(21)]
             notas_p = [results_p[feat.id()][i] for i in range(21)]
             
             soma_l = sum(notas_l)
             hits_l = len([n for n in notas_l if n > 0])
-            media_l = soma_l / hits_l if hits_l > 0 else 0
+            media_pri = soma_l / hits_l if hits_l > 0 else 0
             
             soma_p = sum(notas_p)
             hits_p = len([n for n in notas_p if n > 0])
-            media_p = soma_p / hits_p if hits_p > 0 else 0
+            media_sec = soma_p / hits_p if hits_p > 0 else 0
 
-            attrs = feat.attributes()
-            attrs.append(tipo)
+            # CONSTRUÇÃO DA LISTA DE ATRIBUTOS (Ordem Crítica)
+            # Começa com os atributos originais da feição
+            new_attrs = feat.attributes() 
+            new_attrs.append(tipo) # tipo_line
+            new_attrs.extend(notas_l) # lnPri0...20
+            new_attrs.extend(notas_p) # lnSec0...20
+            new_attrs.extend([soma_l, media_pri, soma_p, media_sec]) # Estatísticas
             
-            attrs.extend(notas_l)
-            attrs.extend(notas_p)
-            attrs.extend([soma_l, media_l, soma_p, media_p])
-            
-            out_f.setAttributes(attrs)
+            out_f.setAttributes(new_attrs)
             sink_lines.addFeature(out_f)
 
         return {
