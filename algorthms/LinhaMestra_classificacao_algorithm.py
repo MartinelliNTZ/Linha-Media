@@ -12,6 +12,7 @@ from qgis.core import (QgsProcessing,
                        QgsWkbTypes,
                        QgsGeometry,
                        QgsFeature,
+                       QgsFields,
                        QgsPointXY,
                        QgsField)
 import math
@@ -81,30 +82,43 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         threshold = self.parameterAsDouble(parameters, self.THRESHOLD, context)
         axis_mode = self.parameterAsInt(parameters, self.AXIS_MODE, context)
+        features = list(source.getFeatures())
 
         # 1. Obter Pontos Extremos e Criar Eixos
+        real_pts = VectorUtils.get_8_cardinal_points([f.geometry() for f in features])
+        extent = source.sourceExtent()
+        mp = extent.center()
+
         if axis_mode == 1: # Eixos Fixos
-            extent = source.sourceExtent()
-            mp = extent.center()
+            # Para NS e LO: Ortogonalidade perfeita, mas com dimensões reais dos dados
+            half_h = (real_pts['N'].y() - real_pts['S'].y()) / 2.0
+            half_w = (real_pts['L'].x() - real_pts['O'].x()) / 2.0
+            
+            # Para Diagonais: Vetor real centralizado no MP da camada
+            def get_centered_pair(p1, p2, center):
+                vx, vy = (p2.x() - p1.x()) / 2.0, (p2.y() - p1.y()) / 2.0
+                return [QgsPointXY(center.x() - vx, center.y() - vy), 
+                        QgsPointXY(center.x() + vx, center.y() + vy)]
+
             pts = {
-                'N': QgsPointXY(mp.x(), extent.yMaximum()),
-                'S': QgsPointXY(mp.x(), extent.yMinimum()),
-                'L': QgsPointXY(extent.xMaximum(), mp.y()),
-                'O': QgsPointXY(extent.xMinimum(), mp.y()),
-                'NO': QgsPointXY(extent.xMinimum(), extent.yMaximum()),
-                'SE': QgsPointXY(extent.xMaximum(), extent.yMinimum()),
-                'SO': QgsPointXY(extent.xMinimum(), extent.yMinimum()),
-                'NE': QgsPointXY(extent.xMaximum(), extent.yMaximum())
+                'NS': [QgsPointXY(mp.x(), mp.y() + half_h), QgsPointXY(mp.x(), mp.y() - half_h)],
+                'LO': [QgsPointXY(mp.x() + half_w, mp.y()), QgsPointXY(mp.x() - half_w, mp.y())],
+                'NOSE': get_centered_pair(real_pts['NO'], real_pts['SE'], mp),
+                'SONE': get_centered_pair(real_pts['SO'], real_pts['NE'], mp)
             }
         else: # Ponto a Ponto
-            geoms = [f.geometry() for f in source.getFeatures()]
-            pts = VectorUtils.get_8_cardinal_points(geoms)
-        
+            pts = {
+                'NS': [real_pts['N'], real_pts['S']],
+                'LO': [real_pts['L'], real_pts['O']],
+                'NOSE': [real_pts['NO'], real_pts['SE']],
+                'SONE': [real_pts['SO'], real_pts['NE']]
+            }
+
         axis_pairs = [
-            ('N*S', [pts['N'], pts['S']]),
-            ('L*O', [pts['L'], pts['O']]),
-            ('NO*SE', [pts['NO'], pts['SE']]),
-            ('SO*NE', [pts['SO'], pts['NE']])
+            ('N*S', pts['NS']),
+            ('L*O', pts['LO']),
+            ('NO*SE', pts['NOSE']),
+            ('SO*NE', pts['SONE'])
         ]
 
         # OUTPUT 1: Eixos
@@ -186,7 +200,18 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             sink_class.addFeature(f)
 
         # 4. Escaneamento e OUTPUT 3
-        fields_lines = source.fields()
+        # Limpeza de Schema: Evita erro de "Value is not a number" ignorando campos de classificações anteriores
+        output_fields = QgsFields()
+        skip_names = ['tipo_line', 'soma_pri', 'media_pri', 'soma_sec', 'media_sec']
+        skip_names += [f'lnPri{i}' for i in range(21)] + [f'lnSec{i}' for i in range(21)]
+        
+        indices_originais = []
+        for i, field in enumerate(source.fields()):
+            if field.name() not in skip_names:
+                output_fields.append(field)
+                indices_originais.append(i)
+
+        fields_lines = output_fields
         fields_lines.append(QgsField('tipo_line', QVariant.String))
         
         # Nomes dos atributos atualizados: lnPri0...20 e lnSec0...20
@@ -210,7 +235,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             if axis_name == 'SO*NE': return max(line_pts, key=lambda p: (p.x() + p.y())) # Nordeste (topo direito)
             return line_pts[0]
 
-        contour_features = list(source.getFeatures())
+        contour_features = features
         
         # Estruturas para guardar as notas
         results_l = {f.id(): {i: 0 for i in range(21)} for f in contour_features}
@@ -267,8 +292,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             media_sec = soma_p / hits_p if hits_p > 0 else 0
 
             # CONSTRUÇÃO DA LISTA DE ATRIBUTOS (Ordem Crítica)
-            # Começa com os atributos originais da feição
-            new_attrs = feat.attributes() 
+            new_attrs = [feat.attribute(idx) for idx in indices_originais]
             new_attrs.append(tipo) # tipo_line
             new_attrs.extend(notas_l) # lnPri0...20
             new_attrs.extend(notas_p) # lnSec0...20
