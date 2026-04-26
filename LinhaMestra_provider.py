@@ -33,6 +33,7 @@ __revision__ = '$Format:%H$'
 from qgis.core import QgsProcessingProvider
 from .algorthms.LinhaMestra_algorithm import LinhaMestraAlgorithm
 from .algorthms.LinhaMestra_numeracao_algorithm import LinhaMestraNumeracaoAlgorithm
+from .algorthms.LinhaMestra_classificacao_algorithm import LinhaMestraClassificacaoAlgorithm
 from .algorthms.LinhaMestra_perpendicular_algorithm import LinhaPerpendicularMediaAlgorithm
 from .algorthms.LinhaMestra_massa_algorithm import LinhaMestraMassaAlgorithm
 from .algorthms.LinhaMestra_extensao_algorithm import LinhaMestraExtensaoAlgorithm
@@ -60,6 +61,7 @@ class LinhaMestraProvider(QgsProcessingProvider):
         """
         self.addAlgorithm(LinhaMestraAlgorithm())
         self.addAlgorithm(LinhaMestraNumeracaoAlgorithm())
+        self.addAlgorithm(LinhaMestraClassificacaoAlgorithm())
         self.addAlgorithm(LinhaPerpendicularMediaAlgorithm())
         self.addAlgorithm(LinhaMestraMassaAlgorithm())
         self.addAlgorithm(LinhaMestraExtensaoAlgorithm())

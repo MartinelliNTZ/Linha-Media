@@ -120,6 +120,52 @@ class VectorUtils:
         return is_straight, avg_az, max_dev
 
     @staticmethod
+    def classify_line_morphology(geom, straight_threshold=5.0):
+        """
+        Classifica a linha em: RETA_SIMPLES, RETA_COMPOSTA, CURVA_CIRCULAR, CURVA_COMPLEXA.
+        """
+        nodes = list(geom.vertices())
+        if len(nodes) <= 2:
+            return "RETA_SIMPLES", 0, 0
+
+        azs = VectorUtils.get_line_azimuths(geom)
+        if not azs:
+            return "CURVA_COMPLEXA", 0, 0
+
+        # Analisa retidão
+        is_straight, avg_az, max_dev = VectorUtils.analyze_straightness(geom, straight_threshold)
+        if is_straight:
+            return "RETA_COMPOSTA", avg_az, max_dev
+
+        # Analisa tendência circular (mudança de azimute constante/monotônica)
+        diffs = []
+        for i in range(len(azs) - 1):
+            d = azs[i+1] - azs[i]
+            if d > 180: d -= 360
+            if d < -180: d += 360
+            diffs.append(d)
+
+        if not diffs:
+            return "CURVA_COMPLEXA", avg_az, max_dev
+
+        # Se a mudança de direção for majoritariamente para o mesmo lado (monotônica)
+        positives = len([d for d in diffs if d > 0.1])
+        negatives = len([d for d in diffs if d < -0.1])
+        total = len(diffs)
+        
+        # Critério: se 80% das mudanças de ângulo forem na mesma direção, consideramos circular
+        is_monotonic = (positives / total > 0.8) or (negatives / total > 0.8)
+        
+        # Também verificamos a variância das mudanças de ângulo (uma curva circular tem mudanças suaves)
+        avg_diff = sum(diffs) / total
+        variance = sum((d - avg_diff)**2 for d in diffs) / total
+        
+        if is_monotonic and variance < 50: # Valor empírico para suavidade
+            return "CURVA_CIRCULAR", avg_az, max_dev
+            
+        return "CURVA_COMPLEXA", avg_az, max_dev
+
+    @staticmethod
     def get_projection_value(point, azimuth_deg):
         """Calcula o valor de projeção espacial perpendicular ao azimute para ordenação."""
         rad = math.radians(azimuth_deg)
