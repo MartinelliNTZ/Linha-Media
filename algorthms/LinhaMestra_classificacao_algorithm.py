@@ -146,28 +146,19 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         ))
 
         # 3. Ponto de Cruzamento e Offsets
-        # Calculamos os vetores de translação para centralizar sem deslocar o sentido original
-        mp = VectorUtils.get_midpoint(primary['pts'][0], primary['pts'][1])
-        ms = VectorUtils.get_midpoint(secondary['pts'][0], secondary['pts'][1])
-
-        # Vetores unitários normais (perpendiculares)
-        dp = primary['pts'][1].x() - primary['pts'][0].x(), primary['pts'][1].y() - primary['pts'][0].y()
-        ds = secondary['pts'][1].x() - secondary['pts'][0].x(), secondary['pts'][1].y() - secondary['pts'][0].y()
+        # Vetores de passo baseados no deslocamento total do eixo oposto dividido por 20 (21 linhas)
+        v_step_pri = QgsPointXY(
+            (secondary['pts'][0].x() - secondary['pts'][1].x()) / 20.0,
+            (secondary['pts'][0].y() - secondary['pts'][1].y()) / 20.0
+        )
         
-        # Normal perpendicular à primária: (-dy, dx)
-        up_x, up_y = -dp[1]/primary['len'], dp[0]/primary['len']
-        # Normal perpendicular à secundária: (-dy, dx)
-        us_x, us_y = -ds[1]/secondary['len'], ds[0]/secondary['len']
+        v_step_sec = QgsPointXY(
+            (primary['pts'][0].x() - primary['pts'][1].x()) / 20.0,
+            (primary['pts'][0].y() - primary['pts'][1].y()) / 20.0
+        )
 
-        # Projeção do vetor (ms - mp) sobre a normal da primária para mover APENAS lateralmente
-        v_diff = ms.x() - mp.x(), ms.y() - mp.y()
-        dot_p = v_diff[0] * up_x + v_diff[1] * up_y
-        center_pri_pts = VectorUtils.translate_line(primary['pts'], up_x * dot_p, up_y * dot_p)
-
-        # Projeção do vetor (mp - ms) sobre a normal da secundária
-        v_diff_s = mp.x() - ms.x(), mp.y() - ms.y()
-        dot_s = v_diff_s[0] * us_x + v_diff_s[1] * us_y
-        center_sec_pts = VectorUtils.translate_line(secondary['pts'], us_x * dot_s, us_y * dot_s)
+        # Centralização: as linhas base (i=0) já estão centralizadas no 'mp' geral
+        # primary['pts'] e secondary['pts'] no modo axis_mode=1 já saem do centro mp
 
         # OUTPUT 2: Classificadores
         fields_class = source.fields()
@@ -175,24 +166,21 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         fields_class.append(QgsField('axis_type', QVariant.String))
         (sink_class, dest_class) = self.parameterAsSink(parameters, self.OUTPUT_CLASSIFIERS, context, fields_class, QgsWkbTypes.LineString, source.sourceCrs())
 
-        # Gerar 21 Offsets da Primária (Varredura - lnPri)
+        # Gerar 21 Offsets da Primária (Varredura - lnPri) -> Movem-se ao longo da Secundária
         primary_offsets = []
-        step_pri = (secondary['len'] / 2.0) / 9.0
-
         for i in range(-10, 11):
-            off_pts = VectorUtils.translate_line(center_pri_pts, up_x * step_pri * i, up_y * step_pri * i)
+            # i=0 é o centro, i=-10 é uma ponta da secundária, i=10 é a outra ponta
+            off_pts = VectorUtils.translate_line(primary['pts'], v_step_pri.x() * i, v_step_pri.y() * i)
             primary_offsets.append(off_pts)
             f = QgsFeature(fields_class)
             f.setGeometry(QgsGeometry.fromPolylineXY(off_pts))
             f.setAttributes([None]*len(source.fields()) + [i, 'PRIMARY'])
             sink_class.addFeature(f)
 
-        # Gerar 21 Offsets da Secundária (Varredura - lnSec)
+        # Gerar 21 Offsets da Secundária (Varredura - lnSec) -> Movem-se ao longo da Primária
         secondary_offsets = []
-        step_sec = (primary['len'] / 2.0) / 9.0
-
         for i in range(-10, 11):
-            off_pts = VectorUtils.translate_line(center_sec_pts, us_x * step_sec * i, us_y * step_sec * i)
+            off_pts = VectorUtils.translate_line(secondary['pts'], v_step_sec.x() * i, v_step_sec.y() * i)
             secondary_offsets.append(off_pts)
             f = QgsFeature(fields_class)
             f.setGeometry(QgsGeometry.fromPolylineXY(off_pts))
