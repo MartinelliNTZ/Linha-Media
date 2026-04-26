@@ -9,6 +9,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterNumber,
                        QgsProcessingParameterEnum,
+                       QgsProcessingParameterBoolean,
                        QgsWkbTypes,
                        QgsGeometry,
                        QgsFeature,
@@ -29,6 +30,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
     AXIS_MODE = 'AXIS_MODE'
     JUDGE_METHOD = 'JUDGE_METHOD'
     N_LINES = 'N_LINES'
+    USE_SECONDARY = 'USE_SECONDARY'
 
     def tr(self, string):
         return QCoreApplication.translate('LinhaMestraClassificacaoAlgorithm', string)
@@ -97,6 +99,14 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         )
         param_n_lines.setFlags(QgsProcessingParameterDefinition.FlagAdvanced)
         self.addParameter(param_n_lines)
+        param_use_sec = QgsProcessingParameterBoolean(
+            self.USE_SECONDARY,
+            self.tr('Usar Grid Secundário (Perpendicular) no Julgamento'),
+            defaultValue=False
+        )
+        param_use_sec.setFlags(QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param_use_sec)
+
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT_AXES,
@@ -240,6 +250,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         axis_mode = self.parameterAsInt(parameters, self.AXIS_MODE, context)
         judge_method = self.parameterAsInt(parameters, self.JUDGE_METHOD, context)
         n_lines_param = self.parameterAsInt(parameters, self.N_LINES, context)
+        use_secondary_grid = self.parameterAsBool(parameters, self.USE_SECONDARY, context)
         features = list(source.getFeatures())
 
         extent = source.sourceExtent()
@@ -381,17 +392,19 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         )
 
         # Grid SECUNDÁRIO: linhas na direção do secundário, varrendo na direção do primário
-        grid_secondary = self._build_smart_grid(
-            features, center,
-            sweep_ux=pri_ux, sweep_uy=pri_uy,   # desloca nesta direção
-            line_ux=sec_ux,  line_uy=sec_uy,    # linha tem esta direção
-            n_lines=n_lines_param,
-            bbox_half_diag=bbox_half_diag
-        )
+        grid_secondary = []
+        if use_secondary_grid:
+            grid_secondary = self._build_smart_grid(
+                features, center,
+                sweep_ux=pri_ux, sweep_uy=pri_uy,
+                line_ux=sec_ux,  line_uy=sec_uy,
+                n_lines=n_lines_param,
+                bbox_half_diag=bbox_half_diag
+            )
 
-        if len(grid_primary) < n_lines_param or len(grid_secondary) < n_lines_param:
+        if len(grid_primary) < n_lines_param or (use_secondary_grid and len(grid_secondary) < n_lines_param):
             feedback.reportError(
-                self.tr(f"Aviso: Grid incompleto. Esperado {n_lines_param}, gerado Pri:{len(grid_primary)} Sec:{len(grid_secondary)}")
+                self.tr(f"Aviso: Grid incompleto. Esperado {n_lines_param}, gerado Pri:{len(grid_primary)} Sec:{len(grid_secondary) if use_secondary_grid else 'N/A'}")
             )
 
         # ----------------------------------------------------------------
@@ -478,33 +491,39 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         # OUTPUT 3: Curvas Classificadas
         # ----------------------------------------------------------------
 
-        # Limpeza de schema (evita conflito com runs anteriores)
+        # 1. Definir Schema INTERNO (para o Juiz trabalhar)
         skip_names = ['tipo_line', 'soma_pri', 'media_pri', 'soma_sec', 'media_sec', 'ordem_espacial']
         skip_names += [f'lnPri{i}' for i in range(101)] # Limpa até 100 para segurança
         skip_names += [f'lnSec{i}' for i in range(101)]
 
-        output_fields = QgsFields()
+        internal_fields = QgsFields()
         indices_originais = []
         for i, field in enumerate(source.fields()):
             if field.name() not in skip_names:
-                output_fields.append(field)
+                internal_fields.append(field)
                 indices_originais.append(i)
 
-        fields_lines = QgsFields(output_fields)
-        fields_lines.append(QgsField('tipo_line', QVariant.String))
+        # Adicionamos os campos temporários necessários para o processamento
+        fields_processing = QgsFields(internal_fields)
+        fields_processing.append(QgsField('tipo_line', QVariant.String))
         for i in range(n_pri):
-            fields_lines.append(QgsField(f'lnPri{i}', QVariant.Int))
+            fields_processing.append(QgsField(f'lnPri{i}', QVariant.Int))
         for i in range(n_sec):
-            fields_lines.append(QgsField(f'lnSec{i}', QVariant.Int))
-        fields_lines.append(QgsField('soma_pri',  QVariant.Double))
-        fields_lines.append(QgsField('media_pri', QVariant.Double))
-        fields_lines.append(QgsField('soma_sec',  QVariant.Double))
-        fields_lines.append(QgsField('media_sec', QVariant.Double))
-        fields_lines.append(QgsField('ordem_espacial', QVariant.Int))
+            fields_processing.append(QgsField(f'lnSec{i}', QVariant.Int))
+        fields_processing.append(QgsField('soma_pri',  QVariant.Double))
+        fields_processing.append(QgsField('media_pri', QVariant.Double))
+        fields_processing.append(QgsField('soma_sec',  QVariant.Double))
+        fields_processing.append(QgsField('media_sec', QVariant.Double))
+        fields_processing.append(QgsField('ordem_espacial', QVariant.Int))
+
+        # 2. Definir Schema FINAL (O que o usuário verá)
+        fields_final = QgsFields(internal_fields)
+        fields_final.append(QgsField('tipo_line', QVariant.String))
+        fields_final.append(QgsField('ordem_espacial', QVariant.Int))
 
         (sink_lines, dest_lines) = self.parameterAsSink(
             parameters, self.OUTPUT_LINES, context,
-            fields_lines, QgsWkbTypes.LineString, source.sourceCrs()
+            fields_final, QgsWkbTypes.LineString, source.sourceCrs()
         )
 
         prepared_features = []
@@ -522,7 +541,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             hits_p   = sum(1 for n in notas_p if n > 0)
             media_sec = soma_p / hits_p if hits_p > 0 else 0.0
 
-            out_f = QgsFeature(fields_lines)
+            out_f = QgsFeature(fields_processing)
             out_f.setGeometry(feat.geometry())
 
             new_attrs = [feat.attribute(idx) for idx in indices_originais]
@@ -538,15 +557,23 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         # ----------------------------------------------------------------
         # 6. JULGAMENTO PELO JUIZ DE ORDENAMENTO
         # ----------------------------------------------------------------
-        juiz = JuizOrdenamento(primary['name'])
+        juiz = JuizOrdenamento(primary['name'], use_secondary_grid)
         ordenados = juiz.julgar(prepared_features, judge_method)
 
         for out_f, ordem in ordenados:
             if feedback.isCanceled(): break
-            attrs = out_f.attributes()
-            attrs[-1] = ordem
-            out_f.setAttributes(attrs)
-            sink_lines.addFeature(out_f)
+            
+            # Criar feição final com schema limpo
+            final_feat = QgsFeature(fields_final)
+            final_feat.setGeometry(out_f.geometry())
+            
+            # Coletar apenas atributos originais + tipo_line + ordem_espacial
+            final_attrs = [out_f.attribute(internal_fields.at(i).name()) for i in range(len(internal_fields))]
+            final_attrs.append(out_f.attribute('tipo_line'))
+            final_attrs.append(ordem)
+            
+            final_feat.setAttributes(final_attrs)
+            sink_lines.addFeature(final_feat)
 
         return {
             self.OUTPUT_LINES:       dest_lines,

@@ -29,12 +29,13 @@ class JuizOrdenamento:
 
     EPSILON = 0.5
 
-    def __init__(self, eixo_primario):
+    def __init__(self, eixo_primario, use_secondary=True):
         assert eixo_primario in REGRAS, 'Eixo invalido: %s' % eixo_primario
         self.eixo  = eixo_primario
         self.perp  = PERPENDICULAR[eixo_primario]
         self.r_pri = REGRAS[eixo_primario]['pri']
         self.r_sec = REGRAS[self.perp]['pri']
+        self.use_secondary = use_secondary
 
     # ── leitura ────────────────────────────────────────────────────────
 
@@ -67,7 +68,8 @@ class JuizOrdenamento:
     def _borda_score(self, feat):
         """Média das posições (ranks) atribuídas e contagem de votos (hits)."""
         ranks = []
-        for prefix in ['lnPri', 'lnSec']:
+        prefixes = ['lnPri', 'lnSec'] if self.use_secondary else ['lnPri']
+        for prefix in prefixes:
             n = self._n_cols(feat, prefix)
             for i in range(n):
                 try:
@@ -92,7 +94,8 @@ class JuizOrdenamento:
         sensores = {} # { 'col_name': [(rank, perf_idx), ...] }
         for idx, p in enumerate(perfis):
             feat = p['feat']
-            for prefix in ['lnPri', 'lnSec']:
+            prefixes = ['lnPri', 'lnSec'] if self.use_secondary else ['lnPri']
+            for prefix in prefixes:
                 n_cols = self._n_cols(feat, prefix)
                 for i in range(n_cols):
                     col = f"{prefix}{i}"
@@ -128,9 +131,9 @@ class JuizOrdenamento:
 
     def _perfil(self, feat):
         n_pri = self._n_cols(feat, 'lnPri')
-        n_sec = self._n_cols(feat, 'lnSec')
+        n_sec = self._n_cols(feat, 'lnSec') if self.use_secondary else 0
         _, pri_pos = self._pos_ponderada(feat, 'lnPri', n_pri)
-        _, sec_pos = self._pos_ponderada(feat, 'lnSec', n_sec)
+        _, sec_pos = self._pos_ponderada(feat, 'lnSec', n_sec) if self.use_secondary else ([], None)
         b_avg, b_hits = self._borda_score(feat)
 
         return {
