@@ -26,6 +26,7 @@ class JuizOrdenamento:
     METODO_ARBITRARIO = 0
     METODO_BORDA = 1
     METODO_GRAFO = 2
+    METODO_CONSENSO = 3
 
     EPSILON = 0.5
 
@@ -127,6 +128,43 @@ class JuizOrdenamento:
                     scores[i] -= 1
         return scores
 
+    def _calc_consenso_scores(self, perfis):
+        """
+        Implementa o Score de Consenso por Posição Relativa.
+        Normaliza os ranks entre 0.0 (primeiro) e 1.0 (último) para cada sensor.
+        """
+        sensores = {} # { 'col_name': [(rank, perf_idx), ...] }
+        for idx, p in enumerate(perfis):
+            feat = p['feat']
+            prefixes = ['lnPri', 'lnSec'] if self.use_secondary else ['lnPri']
+            for prefix in prefixes:
+                n = self._n_cols(feat, prefix)
+                for i in range(n):
+                    col = f"{prefix}{i}"
+                    try:
+                        v = feat[col]
+                        r = int(v) if v not in (None, '', 'NULL') else 0
+                        if r > 0:
+                            if col not in sensores: sensores[col] = []
+                            sensores[col].append((r, idx))
+                    except: continue
+
+        n_perfis = len(perfis)
+        soma_scores = [0.0] * n_perfis
+        hits_count = [0] * n_perfis
+
+        for col, hits in sensores.items():
+            if not hits: continue
+            hits.sort() # Por rank
+            n_hits = len(hits)
+            for rank, p_idx in hits:
+                # Normalização: 0.0 (primeiro da linha) a 1.0 (último da linha)
+                score = (rank - 1) / (n_hits - 1) if n_hits > 1 else 0.0
+                soma_scores[p_idx] += score
+                hits_count[p_idx] += 1
+
+        return [ (soma_scores[i] / hits_count[i]) if hits_count[i] > 0 else None for i in range(n_perfis) ]
+
     # ── perfil ─────────────────────────────────────────────────────────
 
     def _perfil(self, feat):
@@ -143,6 +181,7 @@ class JuizOrdenamento:
             'borda_avg': b_avg,
             'borda_hits': b_hits,
             'grafo_score': 0, # Populado depois se necessário
+            'consenso_avg': None, # Populado depois se necessário
             'orfao':   pri_pos is None and sec_pos is None,
             'ordem':   None,
         }
@@ -169,7 +208,19 @@ class JuizOrdenamento:
             for i, p in enumerate(normais):
                 p['grafo_score'] = g_scores[i]
 
+        # Se for método de consenso, calcula as médias normalizadas
+        if metodo == self.METODO_CONSENSO and normais:
+            c_scores = self._calc_consenso_scores(normais)
+            for i, p in enumerate(normais):
+                p['consenso_avg'] = c_scores[i]
+
         def sort_key(p):
+            if metodo == self.METODO_CONSENSO:
+                # Ordena pela média normalizada (0.0 a 1.0)
+                # Desempate pelo número de hits e posição espacial
+                avg = p['consenso_avg'] if p['consenso_avg'] is not None else 999999
+                return (avg, -p['borda_hits'])
+
             if metodo == self.METODO_GRAFO:
                 # Ordena pelo Score de Copeland (mais vitórias primeiro)
                 # Desempate pelo Borda e depois Espacial

@@ -85,8 +85,8 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterEnum(
                 self.JUDGE_METHOD,
                 self.tr('Método de Julgamento (Juiz)'),
-                options=['Arbitrário (Espacial)', 'Borda Count Adaptado (Consenso)', 'Grafo de Precedência (Pairwise)'],
-                defaultValue=2
+                options=['Arbitrário (Espacial)', 'Borda Count Adaptado (Consenso)', 'Grafo de Precedência (Pairwise)', 'Consenso por Posição Relativa (Normalizado)'],
+                defaultValue=3
             )
         )
         param_n_lines = QgsProcessingParameterNumber(
