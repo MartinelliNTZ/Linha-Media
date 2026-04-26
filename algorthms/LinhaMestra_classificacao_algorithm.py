@@ -110,75 +110,109 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         inter_pt = VectorUtils.get_line_intersection(primary['pts'], secondary['pts'])
         if not inter_pt: inter_pt = VectorUtils.get_midpoint(primary['pts'][0], primary['pts'][1])
 
-        d1 = inter_pt.distance(secondary['pts'][0])
-        d2 = inter_pt.distance(secondary['pts'][1])
-        max_dist = max(d1, d2)
-        step = max_dist / 9.0
-
-        # Calcular vetor unitário perpendicular à primária para o offset
-        dx = primary['pts'][1].x() - primary['pts'][0].x()
-        dy = primary['pts'][1].y() - primary['pts'][0].y()
-        p_len = primary['len']
-        ux, uy = -dy/p_len, dx/p_len # Vetor perpendicular normalizado
-
         # OUTPUT 2: Classificadores
         fields_class = source.fields()
         fields_class.append(QgsField('offset_id', QVariant.Int))
+        fields_class.append(QgsField('axis_type', QVariant.String))
         (sink_class, dest_class) = self.parameterAsSink(parameters, self.OUTPUT_CLASSIFIERS, context, fields_class, QgsWkbTypes.LineString, source.sourceCrs())
 
-        classifier_lines = []
+        # Gerar 21 Offsets da Primária (Varredura Lateral - lclas)
+        primary_offsets = []
+        d1_s = inter_pt.distance(secondary['pts'][0])
+        d2_s = inter_pt.distance(secondary['pts'][1])
+        max_dist_s = max(d1_s, d2_s)
+        step_s = max_dist_s / 9.0
+
+        dx_p = primary['pts'][1].x() - primary['pts'][0].x()
+        dy_p = primary['pts'][1].y() - primary['pts'][0].y()
+        ux_p, uy_p = -dy_p/primary['len'], dx_p/primary['len']
+
         for i in range(-10, 11):
-            off_pts = VectorUtils.translate_line(primary['pts'], ux * step * i, uy * step * i)
-            classifier_lines.append(off_pts)
+            off_pts = VectorUtils.translate_line(primary['pts'], ux_p * step_s * i, uy_p * step_s * i)
+            primary_offsets.append(off_pts)
             f = QgsFeature(fields_class)
             f.setGeometry(QgsGeometry.fromPolylineXY(off_pts))
-            f.setAttributes([None]*len(source.fields()) + [i])
+            f.setAttributes([None]*len(source.fields()) + [i, 'PRIMARY'])
+            sink_class.addFeature(f)
+
+        # Gerar 21 Offsets da Secundária (Varredura Longitudinal - pclas)
+        secondary_offsets = []
+        d1_p = inter_pt.distance(primary['pts'][0])
+        d2_p = inter_pt.distance(primary['pts'][1])
+        max_dist_p = max(d1_p, d2_p)
+        step_p = max_dist_p / 9.0
+
+        dx_s = secondary['pts'][1].x() - secondary['pts'][0].x()
+        dy_s = secondary['pts'][1].y() - secondary['pts'][0].y()
+        ux_s, uy_s = -dy_s/secondary['len'], dx_s/secondary['len']
+
+        for i in range(-10, 11):
+            off_pts = VectorUtils.translate_line(secondary['pts'], ux_s * step_p * i, uy_s * step_p * i)
+            secondary_offsets.append(off_pts)
+            f = QgsFeature(fields_class)
+            f.setGeometry(QgsGeometry.fromPolylineXY(off_pts))
+            f.setAttributes([None]*len(source.fields()) + [i, 'SECONDARY'])
             sink_class.addFeature(f)
 
         # 4. Escaneamento e OUTPUT 3
         fields_lines = source.fields()
         fields_lines.append(QgsField('tipo_line', QVariant.String))
         
-        # Adiciona os 21 campos de classificação lclas0 a lclas20
+        # Adiciona os 21 + 21 campos de classificação
         for i in range(21):
             fields_lines.append(QgsField(f'lclas{i}', QVariant.Int))
+        for i in range(21):
+            fields_lines.append(QgsField(f'pclas{i}', QVariant.Int))
             
-        fields_lines.append(QgsField('soma_notas', QVariant.Double))
-        fields_lines.append(QgsField('media_notas', QVariant.Double))
+        fields_lines.append(QgsField('soma_l', QVariant.Double))
+        fields_lines.append(QgsField('media_l', QVariant.Double))
+        fields_lines.append(QgsField('soma_p', QVariant.Double))
+        fields_lines.append(QgsField('media_p', QVariant.Double))
 
         (sink_lines, dest_lines) = self.parameterAsSink(parameters, self.OUTPUT_LINES, context, fields_lines, QgsWkbTypes.LineString, source.sourceCrs())
 
         # Regra de sentido: Qual ponto da linha de offset é o "Início"?
         # Ex: N*S = Começa no Norte.
         def get_scan_start_pt(line_pts, axis_name):
-            if 'N' in axis_name and 'S' in axis_name: return max(line_pts, key=lambda p: p.y())
-            if 'L' in axis_name and 'O' in axis_name: return min(line_pts, key=lambda p: p.x()) # Oeste
-            if 'NO' in axis_name: return min(line_pts, key=lambda p: p.x() - p.y())
+            if axis_name == 'N*S': return max(line_pts, key=lambda p: p.y())
+            if axis_name == 'L*O': return min(line_pts, key=lambda p: p.x()) # Oeste
+            if axis_name == 'NO*SE': return min(line_pts, key=lambda p: p.x() - p.y())
+            if axis_name == 'SO*NE': return max(line_pts, key=lambda p: p.x() + p.y()) # Nordeste
             return line_pts[0]
 
         contour_features = list(source.getFeatures())
         
-        # Estrutura para guardar as notas: { feature_id: { index_classificador: nota } }
-        # Inicializamos com 0 (não tocado)
-        classification_results = {f.id(): {i: 0 for i in range(21)} for f in contour_features}
+        # Estruturas para guardar as notas
+        results_l = {f.id(): {i: 0 for i in range(21)} for f in contour_features}
+        results_p = {f.id(): {i: 0 for i in range(21)} for f in contour_features}
 
-        for c_idx, c_line in enumerate(classifier_lines):
+        # Escaneamento Varredura Lateral (Offsets da Primária -> lclas)
+        for c_idx, c_line in enumerate(primary_offsets):
             c_geom = QgsGeometry.fromPolylineXY(c_line)
             start_pt = get_scan_start_pt(c_line, primary['name'])
-            
             hits = []
             for feat in contour_features:
                 inter = c_geom.intersection(feat.geometry())
                 if not inter.isEmpty():
-                    # Pega o ponto de impacto mais próximo do início da varredura
                     impact_pt = inter.asMultiPoint()[0] if inter.isMultipart() else inter.asPoint()
-                    dist_scan = start_pt.distance(impact_pt)
-                    hits.append((feat.id(), dist_scan))
-            
-            # Ordena quem a linha de offset tocou primeiro
+                    hits.append((feat.id(), start_pt.distance(impact_pt)))
             hits.sort(key=lambda x: x[1])
             for rank, (fid, _) in enumerate(hits, 1):
-                classification_results[fid][c_idx] = rank
+                results_l[fid][c_idx] = rank
+
+        # Escaneamento Varredura Longitudinal (Offsets da Secundária -> pclas)
+        for c_idx, c_line in enumerate(secondary_offsets):
+            c_geom = QgsGeometry.fromPolylineXY(c_line)
+            start_pt = get_scan_start_pt(c_line, secondary['name'])
+            hits = []
+            for feat in contour_features:
+                inter = c_geom.intersection(feat.geometry())
+                if not inter.isEmpty():
+                    impact_pt = inter.asMultiPoint()[0] if inter.isMultipart() else inter.asPoint()
+                    hits.append((feat.id(), start_pt.distance(impact_pt)))
+            hits.sort(key=lambda x: x[1])
+            for rank, (fid, _) in enumerate(hits, 1):
+                results_p[fid][c_idx] = rank
 
         # Salvar Curvas Finalizadas
         for feat in contour_features:
@@ -187,20 +221,24 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             
             tipo, _, _ = VectorUtils.classify_line_morphology(feat.geometry(), threshold)
             
-            # Coleta as notas de lclas0 a lclas20
-            notas = [classification_results[feat.id()][i] for i in range(21)]
-            soma = sum(notas)
+            # Coleta as notas lclas e pclas
+            notas_l = [results_l[feat.id()][i] for i in range(21)]
+            notas_p = [results_p[feat.id()][i] for i in range(21)]
             
-            # Média apenas das linhas que efetivamente tocaram a curva (valor > 0)
-            hits_count = len([n for n in notas if n > 0])
-            media = soma / hits_count if hits_count > 0 else 0
+            soma_l = sum(notas_l)
+            hits_l = len([n for n in notas_l if n > 0])
+            media_l = soma_l / hits_l if hits_l > 0 else 0
+            
+            soma_p = sum(notas_p)
+            hits_p = len([n for n in notas_p if n > 0])
+            media_p = soma_p / hits_p if hits_p > 0 else 0
 
             attrs = feat.attributes()
             attrs.append(tipo)
             
-            attrs.extend(notas) # Adiciona lclas0...lclas20
-            attrs.append(soma)
-            attrs.append(media)
+            attrs.extend(notas_l)
+            attrs.extend(notas_p)
+            attrs.extend([soma_l, media_l, soma_p, media_p])
             
             out_f.setAttributes(attrs)
             sink_lines.addFeature(out_f)
