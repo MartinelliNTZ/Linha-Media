@@ -75,6 +75,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     ESTILO_LINHA_MESTRA = 'ESTILO_LINHA_MESTRA'
     PARTICOES = 'PARTICOES'
     REDUCAO_FILTRO = 'REDUCAO_FILTRO'
+    ESPACAMENTO = 'ESPACAMENTO'
 
     def initAlgorithm(self, config):
         self.addParameter(
@@ -109,7 +110,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterEnum(
                 self.ESTILO_CONEXAO,
                 self.tr('Estilo de Conexão'),
-                options=['Proximidade', 'Perpendicular', 'Conexão Direta (Ponto a Ponto)'],
+                options=['Proximidade', 'Perpendicular', 'Conexão Direta (Ponto a Ponto)', 'Espaçamento Fixo (1:1)'],
                 defaultValue=0
             )
         )
@@ -118,7 +119,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterEnum(
                 self.ESTILO_LINHA_MESTRA,
                 self.tr('Estilo da Linha Mestra'),
-                options=['Interpolação (Ponto a Ponto)', 'Proximidade (Média Espacial)'],
+                options=['Interpolação (Ponto a Ponto)', 'Proximidade (Média Espacial)', 'Espaçamento Fixo (1:1)'],
                 defaultValue=1
             )
         )
@@ -129,6 +130,16 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
                 self.tr('Critério de Proximidade (Escolha da Base)'),
                 options=['Menor Tamanho', 'Maior Tamanho', 'Menor Ângulo', 'Maior Ângulo', 'Qualquer uma'],
                 defaultValue=0
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.ESPACAMENTO,
+                self.tr('Espaçamento Fixo (Metros)'),
+                type=QgsProcessingParameterNumber.Double,
+                minValue=0.1,
+                defaultValue=1.0
             )
         )
 
@@ -170,6 +181,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         estilo = self.parameterAsInt(parameters, self.ESTILO_CONEXAO, context)
         estilo_mestra = self.parameterAsInt(parameters, self.ESTILO_LINHA_MESTRA, context)
         reducao = self.parameterAsDouble(parameters, self.REDUCAO_FILTRO, context)
+        espacamento = self.parameterAsDouble(parameters, self.ESPACAMENTO, context)
 
         # 1. Extração e Validação (Delegado para VectorUtils)
         linha1, linha2, crs_final = VectorUtils.extract_two_features(source, source2, context)
@@ -187,8 +199,10 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         # Determinar quais dados precisamos calcular para evitar duplicidade
         needs_near = (estilo_mestra == 1 or estilo == 0)
         needs_interp = (estilo_mestra == 0 or estilo == 2 or estilo == 1) # Perpendicular também precisa de interp
+        needs_1to1 = (estilo_mestra == 2 or estilo == 3)
         
         near_conns = []
+        fixed_conns = []
         interp_conns = []
         perp_results = []
 
@@ -206,12 +220,19 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             perp_results = p_results # As perpendiculares são geradas no fluxo de interpolação
             interp_mestra_results = m_results
 
+        # C. Processamento 1:1
+        if needs_1to1:
+            feedback.pushInfo(self.tr('Calculando conexões por Espaçamento Fixo (1:1)...'))
+            g_pai, g_mae = VectorUtils.align_by_endpoint_logic(linha1.geometry(), linha2.geometry())
+            fixed_conns = VectorUtils.generate_1to1_connections(g_pai, g_mae, espacamento)
+            fixed_conns = VectorUtils.filter_connections(fixed_conns, g_pai, g_mae, crs_final, reducao)
+
         # 3. Definição da Linha Mestra Final
         if estilo_mestra == 1:
-            # Mestra baseada nas conexões de proximidade filtradas
             mestra_final = VectorUtils.generate_mestra_from_connections(near_conns)
+        elif estilo_mestra == 2:
+            mestra_final = VectorUtils.generate_mestra_from_connections(fixed_conns)
         else:
-            # Mestra baseada nas conexões interpoladas filtradas
             mestra_final = VectorUtils.generate_mestra_from_connections(interp_conns)
 
         # 4. Seleção do estilo de conexão para saída
@@ -219,6 +240,8 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             conexao_final_results = near_conns
         elif estilo == 1: # Perpendicular
             conexao_final_results = perp_results
+        elif estilo == 3: # 1:1
+            conexao_final_results = fixed_conns
         else: # Conexão Direta (Ponto a Ponto)
             conexao_final_results = interp_conns
 

@@ -29,6 +29,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
     OUTPUT = 'OUTPUT'
     CONEXAO_OUTPUT = 'CONEXAO_OUTPUT'
     REDUCAO_FILTRO = 'REDUCAO_FILTRO'
+    ESPACAMENTO = 'ESPACAMENTO'
 
     def initAlgorithm(self, config):
         self.addParameter(QgsProcessingParameterFeatureSource(
@@ -51,14 +52,14 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterEnum(
                 self.ESTILO_CONEXAO,
                 self.tr('Estilo de Conexão'),
-                options=['Proximidade', 'Perpendicular', 'Conexão Direta (Ponto a Ponto)'],
+                options=['Proximidade', 'Perpendicular', 'Conexão Direta (Ponto a Ponto)', 'Espaçamento Fixo (1:1)'],
                 defaultValue=0))
 
         self.addParameter(
             QgsProcessingParameterEnum(
                 self.ESTILO_LINHA_MESTRA,
                 self.tr('Estilo da Linha Mestra'),
-                options=['Interpolação (Ponto a Ponto)', 'Proximidade (Média Espacial)'],
+                options=['Interpolação (Ponto a Ponto)', 'Proximidade (Média Espacial)', 'Espaçamento Fixo (1:1)'],
                 defaultValue=1))
 
         self.addParameter(
@@ -67,6 +68,16 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 self.tr('Critério de Proximidade (Escolha da Base)'),
                 options=['Menor Tamanho', 'Maior Tamanho', 'Menor Ângulo', 'Maior Ângulo', 'Qualquer uma'],
                 defaultValue=0))
+
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.ESPACAMENTO,
+                self.tr('Espaçamento Fixo (Metros)'),
+                type=QgsProcessingParameterNumber.Double,
+                minValue=0.1,
+                defaultValue=1.0
+            )
+        )
 
         param_reducao = QgsProcessingParameterNumber(
             self.REDUCAO_FILTRO,
@@ -97,6 +108,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
         estilo_conn = self.parameterAsInt(parameters, self.ESTILO_CONEXAO, context)
         estilo_mestra = self.parameterAsInt(parameters, self.ESTILO_LINHA_MESTRA, context)
         reducao = self.parameterAsDouble(parameters, self.REDUCAO_FILTRO, context)
+        espacamento = self.parameterAsDouble(parameters, self.ESPACAMENTO, context)
 
         # 1. Coletar e Organizar Grupos
         features = list(source.getFeatures())
@@ -168,8 +180,10 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 # C. Pipeline Otimizada
                 needs_near = (estilo_mestra == 1 or estilo_conn == 0)
                 needs_interp = (estilo_mestra == 0 or estilo_conn == 2 or estilo_conn == 1)
+                needs_1to1 = (estilo_mestra == 2 or estilo_conn == 3)
                 
                 near_conns = []
+                fixed_conns = []
                 interp_conns = []
                 perp_results = []
 
@@ -182,9 +196,16 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                     interp_conns = VectorUtils.filter_connections(c_res, g1, g2, source.sourceCrs(), reducao)
                     perp_results = p_res
 
+                if needs_1to1:
+                    g_pai, g_mae = VectorUtils.align_by_endpoint_logic(f1.geometry(), f2.geometry())
+                    fixed_conns = VectorUtils.generate_1to1_connections(g_pai, g_mae, espacamento)
+                    fixed_conns = VectorUtils.filter_connections(fixed_conns, g_pai, g_mae, source.sourceCrs(), reducao)
+
                 # D. Definir Mestra e Conexão de Saída para este par
                 if estilo_mestra == 1:
                     mestra_final_par = VectorUtils.generate_mestra_from_connections(near_conns)
+                elif estilo_mestra == 2:
+                    mestra_final_par = VectorUtils.generate_mestra_from_connections(fixed_conns)
                 else:
                     mestra_final_par = VectorUtils.generate_mestra_from_connections(interp_conns)
 
@@ -192,6 +213,8 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                     conexao_par = near_conns
                 elif estilo_conn == 1:
                     conexao_par = perp_results
+                elif estilo_conn == 3:
+                    conexao_par = fixed_conns
                 else:
                     conexao_par = interp_conns
 

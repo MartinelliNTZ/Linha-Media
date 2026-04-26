@@ -192,6 +192,97 @@ class VectorUtils:
         return g1, geom2
 
     @staticmethod
+    def align_by_endpoint_logic(geom1, geom2):
+        """
+        Determina Pai/Mãe e alinhamento baseado na regra:
+        1. Verifica qual ponta de uma linha se liga ao meio da outra.
+        2. Desempate por menor distância entre ponta e ponto mais próximo.
+        Retorna (geom_pai, geom_mae, invert_pai, invert_mae)
+        """
+        def check_endpoint(pt, target_geom):
+            nearest_pt = target_geom.nearestPoint(QgsGeometry.fromPointXY(pt)).asPoint()
+            # Verifica se está no 'meio' (longe das pontas da target)
+            nodes = list(target_geom.vertices())
+            d_start = nearest_pt.distance(QgsPointXY(nodes[0].x(), nodes[0].y()))
+            d_end = nearest_pt.distance(QgsPointXY(nodes[-1].x(), nodes[-1].y()))
+            is_mid = d_start > 0.01 and d_end > 0.01
+            return is_mid, pt.distance(nearest_pt), nearest_pt
+
+        v1 = list(geom1.vertices())
+        v2 = list(geom2.vertices())
+        
+        # Testes: (LinhaOrigem, PontaIdx, Target)
+        tests = [
+            ('L1', 0, geom2, QgsPointXY(v1[0].x(), v1[0].y())),
+            ('L1', -1, geom2, QgsPointXY(v1[-1].x(), v1[-1].y())),
+            ('L2', 0, geom1, QgsPointXY(v2[0].x(), v2[0].y())),
+            ('L2', -1, geom1, QgsPointXY(v2[-1].x(), v2[-1].y()))
+        ]
+
+        results = []
+        for label, idx, target, pt in tests:
+            is_mid, dist, target_pt = check_endpoint(pt, target)
+            results.append({'label': label, 'idx': idx, 'is_mid': is_mid, 'dist': dist, 'pt': pt, 'target_pt': target_pt})
+
+        # Critério 1: Quem liga no meio ganha
+        mids = [r for r in results if r['is_mid']]
+        if mids:
+            winner = min(mids, key=lambda x: x['dist'])
+        else:
+            # Critério 2: Menor distância absoluta
+            winner = min(results, key=lambda x: x['dist'])
+
+        if winner['label'] == 'L1':
+            pai = VectorUtils.reverse_geometry(geom1) if winner['idx'] == -1 else geom1
+            # Alinha mãe com o ponto de impacto
+            nodes_pai = list(pai.vertices())
+            p_start_pai = QgsPointXY(nodes_pai[0].x(), nodes_pai[0].y())
+            mae = geom2
+            # Verifica se a mãe precisa inverter para o início estar perto do pai
+            if p_start_pai.distance(QgsPointXY(v2[0].x(), v2[0].y())) > p_start_pai.distance(QgsPointXY(v2[-1].x(), v2[-1].y())):
+                mae = VectorUtils.reverse_geometry(geom2)
+            return pai, mae
+        else:
+            pai = VectorUtils.reverse_geometry(geom2) if winner['idx'] == -1 else geom2
+            nodes_pai = list(pai.vertices())
+            p_start_pai = QgsPointXY(nodes_pai[0].x(), nodes_pai[0].y())
+            mae = geom1
+            if p_start_pai.distance(QgsPointXY(v1[0].x(), v1[0].y())) > p_start_pai.distance(QgsPointXY(v1[-1].x(), v1[-1].y())):
+                mae = VectorUtils.reverse_geometry(geom1)
+            return pai, mae
+
+    @staticmethod
+    def get_points_at_interval(geom, interval):
+        """Gera pontos ao longo da linha a cada intervalo fixo de metros."""
+        length = geom.length()
+        num_points = int(length / interval) + 1
+        points = []
+        for i in range(num_points):
+            points.append(geom.interpolate(i * interval).asPoint())
+        return points
+
+    @staticmethod
+    def generate_1to1_connections(geom_pai, geom_mae, interval):
+        """Gera conexões 1:1 baseadas em distância fixa."""
+        pts_pai = VectorUtils.get_points_at_interval(geom_pai, interval)
+        pts_mae = VectorUtils.get_points_at_interval(geom_mae, interval)
+        
+        connections = []
+        limit = min(len(pts_pai), len(pts_mae))
+        
+        for i in range(limit):
+            p1 = pts_pai[i]
+            p2 = pts_mae[i]
+            connections.append({
+                'geom': QgsGeometry.fromPolylineXY([p1, p2]),
+                'id': i + 1,
+                'id_pai': float(i),
+                'id_mae': float(i),
+                'id_origem': float(i + 1)
+            })
+        return connections
+
+    @staticmethod
     def generate_linhamestra_elements(geom1, geom2, partitions, feedback=None):
         """
         Orquestra o fluxo completo de geração da linha mestra.
