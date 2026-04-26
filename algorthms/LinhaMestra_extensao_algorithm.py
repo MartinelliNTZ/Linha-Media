@@ -8,7 +8,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterNumber,
                        QgsFeature)
-from .geometry_utils import VectorLayerGeometry
+from ..core.geometry_utils import VectorLayerGeometry
 
 class LinhaMestraExtensaoAlgorithm(QgsProcessingAlgorithm):
     """

@@ -12,7 +12,7 @@ from qgis.core import (QgsProcessing,
                        QgsWkbTypes,
                        QgsFields,
                        QgsField)
-from .vector_utils import VectorUtils
+from ..core.vector_utils import VectorUtils
 
 class LinhaPerpendicularMediaAlgorithm(QgsProcessingAlgorithm):
     INPUT_LINE = 'INPUT_LINE'

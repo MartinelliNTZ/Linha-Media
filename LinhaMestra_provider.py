@@ -31,12 +31,12 @@ __copyright__ = '(C) 2026 by Iridium'
 __revision__ = '$Format:%H$'
 
 from qgis.core import QgsProcessingProvider
-from .LinhaMestra_algorithm import LinhaMestraAlgorithm
-from .LinhaMestra_numeracao_algorithm import LinhaMestraNumeracaoAlgorithm
-from .LinhaMestra_perpendicular_algorithm import LinhaPerpendicularMediaAlgorithm
-from .LinhaMestra_massa_algorithm import LinhaMestraMassaAlgorithm
-from .LinhaMestra_extensao_algorithm import LinhaMestraExtensaoAlgorithm
-from .LinhaMestra_corte_algorithm import LinhaMestraCorteAlgorithm
+from .algorthms.LinhaMestra_algorithm import LinhaMestraAlgorithm
+from .algorthms.LinhaMestra_numeracao_algorithm import LinhaMestraNumeracaoAlgorithm
+from .algorthms.LinhaMestra_perpendicular_algorithm import LinhaPerpendicularMediaAlgorithm
+from .algorthms.LinhaMestra_massa_algorithm import LinhaMestraMassaAlgorithm
+from .algorthms.LinhaMestra_extensao_algorithm import LinhaMestraExtensaoAlgorithm
+from .algorthms.LinhaMestra_corte_algorithm import LinhaMestraCorteAlgorithm
 
 
 class LinhaMestraProvider(QgsProcessingProvider):

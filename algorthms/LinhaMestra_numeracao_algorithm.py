@@ -32,7 +32,7 @@ from qgis.core import (QgsProcessing,
                        QgsField,
                        QgsPointXY,
                        QgsDistanceArea)
-from .vector_utils import VectorUtils
+from ..core.vector_utils import VectorUtils
 
 class LinhaMestraNumeracaoAlgorithm(QgsProcessingAlgorithm):
 

@@ -16,8 +16,8 @@ from qgis.core import (QgsProcessing,
                        QgsWkbTypes,
                        QgsFields,
                        QgsField)
-from .vector_utils import VectorUtils
-from .connection_judge import ConnectionJudge
+from ..core.vector_utils import VectorUtils
+from ..core.connection_judge import ConnectionJudge
 
 class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
