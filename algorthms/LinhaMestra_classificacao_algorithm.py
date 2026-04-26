@@ -16,6 +16,7 @@ from qgis.core import (QgsProcessing,
                        QgsField)
 import math
 from ..core.vector_utils import VectorUtils
+from ..core.JuizOrdenamento import JuizOrdenamento
 
 
 class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
@@ -173,9 +174,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         1. Projeta todas as curvas no eixo perpendicular (sweep) para saber
            o intervalo real ocupado pelas curvas.
         2. Divide esse intervalo em (n_lines - 1) espaços iguais.
-        3. Garante que toda linha toca ao menos uma curva (filtra linhas
-           sem interseção caso o intervalo calculado seja mais largo que
-           a nuvem de curvas).
+        3. Mantém o número fixo de linhas para garantir integridade do schema.
 
         Retorna lista de (offset_id, [QgsPointXY, QgsPointXY]).
         """
@@ -184,9 +183,15 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         )
 
         if min_proj == float('inf'):
+            # Erro Silencioso identificado: se não houver vértices válidos, o grid falha.
             return []
 
         total_span = max_proj - min_proj
+        
+        # Prevenção de divisão por zero se todas as curvas estiverem alinhadas perfeitamente
+        if total_span <= 0:
+            total_span = 0.001 
+            
         step = total_span / (n_lines - 1) if n_lines > 1 else 0.0
 
         grid_lines = []
@@ -200,18 +205,9 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
                             ly - line_uy * bbox_half_diag * 2)
             grid_lines.append((i - n_lines // 2, [p1, p2]))
 
-        # Filtragem: mantém apenas linhas que intersectam ao menos 1 curva
-        valid_lines = []
-        for offset_id, pts in grid_lines:
-            c_geom = QgsGeometry.fromPolylineXY(pts)
-            hits_any = any(
-                not c_geom.intersection(feat.geometry()).isEmpty()
-                for feat in features
-            )
-            if hits_any:
-                valid_lines.append((offset_id, pts))
-
-        return valid_lines
+        # Retornamos todas as linhas. Se não houver hit, o rank será 0, 
+        # mas o atributo lnPri/lnSec continuará existindo na tabela.
+        return grid_lines
 
     # ------------------------------------------------------------------
     # PROCESSO PRINCIPAL
@@ -349,6 +345,11 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         pri_ux, pri_uy = primary['ux'], primary['uy']
         sec_ux, sec_uy = secondary['ux'], secondary['uy']
 
+        if primary['len'] <= 0 or secondary['len'] <= 0:
+            raise QgsProcessingException(
+                self.tr("Erro no cálculo dos eixos: um dos eixos possui comprimento zero. Verifique as geometrias.")
+            )
+
         # Grid PRIMÁRIO: linhas na direção do primário, varrendo na direção do secundário
         grid_primary = self._build_smart_grid(
             features, center,
@@ -366,6 +367,11 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             n_lines=N_LINES,
             bbox_half_diag=bbox_half_diag
         )
+
+        if len(grid_primary) < N_LINES or len(grid_secondary) < N_LINES:
+            feedback.reportError(
+                self.tr(f"Aviso: Grid incompleto. Esperado {N_LINES}, gerado Pri:{len(grid_primary)} Sec:{len(grid_secondary)}")
+            )
 
         # ----------------------------------------------------------------
         # OUTPUT 2: Linhas do Grid (Classificadores)
@@ -452,7 +458,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         # ----------------------------------------------------------------
 
         # Limpeza de schema (evita conflito com runs anteriores)
-        skip_names = ['tipo_line', 'soma_pri', 'media_pri', 'soma_sec', 'media_sec']
+        skip_names = ['tipo_line', 'soma_pri', 'media_pri', 'soma_sec', 'media_sec', 'ordem_espacial']
         skip_names += [f'lnPri{i}' for i in range(30)]
         skip_names += [f'lnSec{i}' for i in range(30)]
 
@@ -473,16 +479,15 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         fields_lines.append(QgsField('media_pri', QVariant.Double))
         fields_lines.append(QgsField('soma_sec',  QVariant.Double))
         fields_lines.append(QgsField('media_sec', QVariant.Double))
+        fields_lines.append(QgsField('ordem_espacial', QVariant.Int))
 
         (sink_lines, dest_lines) = self.parameterAsSink(
             parameters, self.OUTPUT_LINES, context,
             fields_lines, QgsWkbTypes.LineString, source.sourceCrs()
         )
 
+        prepared_features = []
         for feat in features:
-            out_f = QgsFeature(fields_lines)
-            out_f.setGeometry(feat.geometry())
-
             tipo, _, _ = VectorUtils.classify_line_morphology(feat.geometry(), threshold)
 
             notas_l = [results_l[feat.id()][i] for i in range(n_pri)]
@@ -496,13 +501,30 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             hits_p   = sum(1 for n in notas_p if n > 0)
             media_sec = soma_p / hits_p if hits_p > 0 else 0.0
 
+            out_f = QgsFeature(fields_lines)
+            out_f.setGeometry(feat.geometry())
+
             new_attrs = [feat.attribute(idx) for idx in indices_originais]
             new_attrs.append(tipo)
             new_attrs.extend(notas_l)
             new_attrs.extend(notas_p)
             new_attrs.extend([soma_l, media_pri, soma_p, media_sec])
+            new_attrs.append(None)  # Placeholder para ordem_espacial
 
             out_f.setAttributes(new_attrs)
+            prepared_features.append(out_f)
+
+        # ----------------------------------------------------------------
+        # 6. JULGAMENTO PELO JUIZ DE ORDENAMENTO
+        # ----------------------------------------------------------------
+        juiz = JuizOrdenamento(primary['name'])
+        ordenados = juiz.julgar(prepared_features)
+
+        for out_f, ordem in ordenados:
+            if feedback.isCanceled(): break
+            attrs = out_f.attributes()
+            attrs[-1] = ordem
+            out_f.setAttributes(attrs)
             sink_lines.addFeature(out_f)
 
         return {
