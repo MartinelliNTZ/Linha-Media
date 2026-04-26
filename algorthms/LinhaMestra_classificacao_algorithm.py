@@ -512,7 +512,8 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         # ----------------------------------------------------------------
 
         # 1. Definir Schema INTERNO (para o Juiz trabalhar)
-        skip_names = ['id', 'tipo_line', 'soma_pri', 'media_pri', 'soma_sec', 'media_sec', 'ordem_espacial']
+        skip_names = ['id', 'tipo_line', 'soma_pri', 'media_pri', 'soma_sec', 'media_sec', 
+                      'ordem_espacial', 'viz_n', 'viz_dir', 'viz_perc']
         skip_names += [f'lnPri{i}' for i in range(101)] # Limpa até 100 para segurança
         skip_names += [f'lnSec{i}' for i in range(101)]
 
@@ -541,11 +542,61 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         fields_final.append(QgsField('id', QVariant.LongLong))
         fields_final.append(QgsField('tipo_line', QVariant.String))
         fields_final.append(QgsField('ordem_espacial', QVariant.Int))
+        fields_final.append(QgsField('viz_n', QVariant.Int))
+        fields_final.append(QgsField('viz_dir', QVariant.String))
+        fields_final.append(QgsField('viz_perc', QVariant.Double))
 
         (sink_lines, dest_lines) = self.parameterAsSink(
             parameters, self.OUTPUT_LINES, context,
             fields_final, QgsWkbTypes.LineString, source.sourceCrs()
         )
+
+        # ----------------------------------------------------------------
+        # 5.5 GERAÇÃO PRÉVIA DE SENSORES PERPENDICULARES (Para o Juiz analisar)
+        # ----------------------------------------------------------------
+        fields_perp = QgsFields()
+        fields_perp.append(QgsField('parent_id', QVariant.LongLong))
+        fields_perp.append(QgsField('vertex_id', QVariant.Int))
+        fields_perp.append(QgsField('azimuth', QVariant.Double))
+        fields_perp.append(QgsField('touch_id', QVariant.LongLong))
+        fields_perp.append(QgsField('side', QVariant.String))
+
+        (sink_perp, dest_perp) = self.parameterAsSink(
+            parameters, self.OUTPUT_PERP_SENSORS, context,
+            fields_perp, QgsWkbTypes.LineString, source.sourceCrs()
+        )
+
+        spatial_index = QgsSpatialIndex(source.getFeatures())
+        feat_dict = {f.id(): f for f in features}
+        all_sensors_collected = []
+
+        max_ray = perp_len / 2.0
+        for f in features:
+            if feedback.isCanceled(): break
+            polyline = list(f.geometry().vertices())
+            for v_idx, v in enumerate(polyline):
+                p_start = QgsPointXY(v.x(), v.y())
+                az_local = VectorUtils.get_vertex_azimuth(polyline, v_idx)
+                for az_ray in [(az_local + 90) % 360, (az_local - 90) % 360]:
+                    rad = math.radians(az_ray)
+                    p_end_raw = QgsPointXY(p_start.x() + max_ray * math.sin(rad), p_start.y() + max_ray * math.cos(rad))
+                    ray_geom = QgsGeometry.fromPolylineXY([p_start, p_end_raw])
+                    
+                    closest_dist, touch_id, final_p_end = float('inf'), -1, p_end_raw
+                    for c_id in spatial_index.intersects(ray_geom.boundingBox()):
+                        if c_id == f.id(): continue
+                        inter = ray_geom.intersection(feat_dict[c_id].geometry())
+                        if not inter.isEmpty():
+                            pt = VectorUtils._get_closest_point(inter, p_start)
+                            if pt and 0.001 < p_start.distance(pt) < closest_dist:
+                                closest_dist, touch_id, final_p_end = p_start.distance(pt), c_id, pt
+                    
+                    feat_perp = QgsFeature(fields_perp)
+                    feat_perp.setGeometry(QgsGeometry.fromPolylineXY([p_start, final_p_end]))
+                    attrs_s = [f.id(), v_idx + 1, az_ray, touch_id, VectorUtils.get_cardinal_direction(az_ray)]
+                    feat_perp.setAttributes(attrs_s)
+                    sink_perp.addFeature(feat_perp, QgsFeatureSink.FastInsert)
+                    all_sensors_collected.append(feat_perp)
 
         prepared_features = []
         for feat in features:
@@ -582,10 +633,19 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         # 6. JULGAMENTO PELO JUIZ DE ORDENAMENTO
         # ----------------------------------------------------------------
         juiz = JuizOrdenamento(primary['name'], use_secondary_grid)
+        
+        # Criar perfis e analisar vizinhança ANTES de salvar no sink
+        perfis_internos = [juiz._perfil(f) for f in prepared_features]
+        juiz.analisar_vizinhanca(perfis_internos, all_sensors_collected)
+        
+        # Executar o julgamento
         ordenados = juiz.julgar(prepared_features, judge_method)
+        # Mapeamos a ordem para os perfis para facilitar a escrita final
+        ordem_map = {feat.id(): ordem for feat, ordem in ordenados}
 
-        for out_f, ordem in ordenados:
+        for p in perfis_internos:
             if feedback.isCanceled(): break
+            out_f = p['feat']
             
             # Criar feição final com schema limpo
             final_feat = QgsFeature(fields_final)
@@ -595,92 +655,13 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             final_attrs = [out_f.attribute(internal_fields.at(i).name()) for i in range(len(internal_fields))]
             final_attrs.append(out_f.id()) # Novo campo ID limpo e sincronizado
             final_attrs.append(out_f.attribute('tipo_line'))
-            final_attrs.append(ordem)
+            final_attrs.append(ordem_map.get(out_f.id()))
+            final_attrs.append(p['viz_n'])
+            final_attrs.append(p['viz_dir'])
+            final_attrs.append(p['viz_perc'])
             
             final_feat.setAttributes(final_attrs)
             sink_lines.addFeature(final_feat)
-
-        # ----------------------------------------------------------------
-        # 7. GERAÇÃO DE SENSORES PERPENDICULARES (Broken & Clipped)
-        # ----------------------------------------------------------------
-        fields_perp = QgsFields()
-        fields_perp.append(QgsField('parent_id', QVariant.LongLong))
-        fields_perp.append(QgsField('vertex_id', QVariant.Int))
-        fields_perp.append(QgsField('azimuth', QVariant.Double))
-        fields_perp.append(QgsField('touch_id', QVariant.LongLong))
-        fields_perp.append(QgsField('side', QVariant.String))
-
-        (sink_perp, dest_perp) = self.parameterAsSink(
-            parameters, self.OUTPUT_PERP_SENSORS, context,
-            fields_perp, QgsWkbTypes.LineString, source.sourceCrs()
-        )
-
-        spatial_index = QgsSpatialIndex(source.getFeatures())
-        feat_dict = {f.id(): f for f in source.getFeatures()}
-
-        def get_cardinal(az):
-            az = az % 360
-            if 337.5 <= az or az < 22.5: return 'N'
-            if 22.5 <= az < 67.5: return 'NE'
-            if 67.5 <= az < 112.5: return 'L'
-            if 112.5 <= az < 157.5: return 'SE'
-            if 157.5 <= az < 202.5: return 'S'
-            if 202.5 <= az < 247.5: return 'SO'
-            if 247.5 <= az < 292.5: return 'O'
-            if 292.5 <= az < 337.5: return 'NO'
-            return ''
-
-        max_ray = perp_len / 2.0
-
-        for f in features:
-            if feedback.isCanceled(): break
-            geom = f.geometry()
-            polyline = list(geom.vertices())
-            
-            for v_idx, v in enumerate(polyline):
-                p_start = QgsPointXY(v.x(), v.y())
-                az_local = VectorUtils.get_vertex_azimuth(polyline, v_idx)
-                
-                # Duas direções perpendiculares (90 graus para cada lado)
-                dirs = [(az_local + 90) % 360, (az_local - 90) % 360]
-                
-                for az_ray in dirs:
-                    rad = math.radians(az_ray)
-                    p_end_raw = QgsPointXY(p_start.x() + max_ray * math.sin(rad),
-                                          p_start.y() + max_ray * math.cos(rad))
-                    
-                    ray_geom = QgsGeometry.fromPolylineXY([p_start, p_end_raw])
-                    candidates = spatial_index.intersects(ray_geom.boundingBox())
-                    
-                    closest_dist = float('inf')
-                    touch_id = -1
-                    final_p_end = p_end_raw
-                    
-                    for c_id in candidates:
-                        if c_id == f.id(): continue # Ignora a própria linha
-                        
-                        inter = ray_geom.intersection(feat_dict[c_id].geometry())
-                        if not inter.isEmpty():
-                            impact_pt = VectorUtils._get_closest_point(inter, p_start)
-                            if impact_pt:
-                                d = p_start.distance(impact_pt)
-                                # Margem para evitar auto-intersecção em vértices compartilhados
-                                if d > 0.001 and d < closest_dist:
-                                    closest_dist = d
-                                    touch_id = c_id
-                                    final_p_end = impact_pt
-                    
-                    # Criar feição do sensor (segmento da origem até o impacto ou limite)
-                    feat_perp = QgsFeature(fields_perp)
-                    feat_perp.setGeometry(QgsGeometry.fromPolylineXY([p_start, final_p_end]))
-                    feat_perp.setAttributes([
-                        f.id(),
-                        v_idx + 1,
-                        az_ray,
-                        touch_id,
-                        get_cardinal(az_ray)
-                    ])
-                    sink_perp.addFeature(feat_perp, QgsFeatureSink.FastInsert)
 
         return {
             self.OUTPUT_LINES:       dest_lines,

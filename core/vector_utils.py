@@ -236,6 +236,20 @@ class VectorUtils:
         return (az1 + diff / 2.0) % 360
 
     @staticmethod
+    def get_cardinal_direction(az):
+        """Converte um azimute em sigla cardinal (N, NE, L, SE, S, SO, O, NO)."""
+        az = az % 360
+        if 337.5 <= az or az < 22.5: return 'N'
+        if 22.5 <= az < 67.5: return 'NE'
+        if 67.5 <= az < 112.5: return 'L'
+        if 112.5 <= az < 157.5: return 'SE'
+        if 157.5 <= az < 202.5: return 'S'
+        if 202.5 <= az < 247.5: return 'SO'
+        if 247.5 <= az < 292.5: return 'O'
+        if 292.5 <= az < 337.5: return 'NO'
+        return ''
+
+    @staticmethod
     def calculate_internal_angle(p1, p2, p3):
         """Calcula o ângulo interno em p2 formado pelos segmentos p1-p2 e p2-p3."""
         v1 = (p1.x() - p2.x(), p1.y() - p2.y())

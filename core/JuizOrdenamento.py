@@ -184,7 +184,45 @@ class JuizOrdenamento:
             'consenso_avg': None, # Populado depois se necessário
             'orfao':   pri_pos is None and sec_pos is None,
             'ordem':   None,
+            'viz_n':    0,
+            'viz_dir':  'Nenhum',
+            'viz_perc': 0.0
         }
+
+    def analisar_vizinhanca(self, perfis, sensores_features):
+        """
+        Analisa os sensores perpendiculares para extrair métricas de vizinhança.
+        perfis: lista de dicts de perfil gerados por _perfil.
+        sensores_features: lista de feições de sensores (contendo parent_id, touch_id, side, vertex_id).
+        """
+        # Agrupar sensores por parent_id
+        mapa_sensores = {}
+        for sf in sensores_features:
+            pid = sf['parent_id']
+            if pid not in mapa_sensores: mapa_sensores[pid] = []
+            mapa_sensores[pid].append(sf)
+
+        for p in perfis:
+            fid = p['feat'].id()
+            meus_sensores = mapa_sensores.get(fid, [])
+            if not meus_sensores: continue
+
+            hits = [s for s in meus_sensores if s['touch_id'] != -1]
+            
+            # 1. Quantos vizinhos únicos (excluindo a si mesmo e vazio)
+            vizinhos_unicos = set([s['touch_id'] for s in hits])
+            p['viz_n'] = len(vizinhos_unicos)
+
+            # 2. Direção e se tem em ambos os lados
+            sides = set([s['side'] for s in hits])
+            if not sides: p['viz_dir'] = 'Nenhum'
+            elif len(sides) > 1: p['viz_dir'] = 'Ambos'
+            else: p['viz_dir'] = list(sides)[0]
+
+            # 3. Porcentagem de vértices que têm ao menos um vizinho
+            total_v = max([s['vertex_id'] for s in meus_sensores]) if meus_sensores else 1
+            v_com_hit = len(set([s['vertex_id'] for s in hits]))
+            p['viz_perc'] = (v_com_hit / total_v) * 100.0 if total_v > 0 else 0.0
 
     # ── chave ──────────────────────────────────────────────────────────
 
