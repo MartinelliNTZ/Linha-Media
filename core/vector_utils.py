@@ -166,6 +166,43 @@ class VectorUtils:
         return "CURVA_COMPLEXA", avg_az, max_dev
 
     @staticmethod
+    def get_8_cardinal_points(geometries):
+        """Extrai os 8 pontos extremos (N, S, L, O, NE, SO, NO, SE) de um conjunto de geometrias."""
+        all_pts = []
+        for geom in geometries:
+            for v in geom.vertices():
+                all_pts.append(QgsPointXY(v.x(), v.y()))
+        
+        if not all_pts:
+            return {}
+
+        return {
+            'N': max(all_pts, key=lambda p: p.y()),
+            'S': min(all_pts, key=lambda p: p.y()),
+            'L': max(all_pts, key=lambda p: p.x()),
+            'O': min(all_pts, key=lambda p: p.x()),
+            'NE': max(all_pts, key=lambda p: p.x() + p.y()),
+            'SO': min(all_pts, key=lambda p: p.x() + p.y()),
+            'NO': min(all_pts, key=lambda p: p.x() - p.y()),
+            'SE': max(all_pts, key=lambda p: p.x() - p.y())
+        }
+
+    @staticmethod
+    def get_line_intersection(line1_pts, line2_pts):
+        """Calcula a interseção entre duas retas (segmentos definidos por lista de 2 pontos)."""
+        g1 = QgsGeometry.fromPolylineXY(line1_pts)
+        g2 = QgsGeometry.fromPolylineXY(line2_pts)
+        inter = g1.intersection(g2)
+        if inter.isEmpty():
+            return None
+        return inter.asPoint()
+
+    @staticmethod
+    def translate_line(line_pts, vector_x, vector_y):
+        """Translada uma linha baseada em um vetor."""
+        return [QgsPointXY(p.x() + vector_x, p.y() + vector_y) for p in line_pts]
+
+    @staticmethod
     def get_projection_value(point, azimuth_deg):
         """Calcula o valor de projeção espacial perpendicular ao azimute para ordenação."""
         rad = math.radians(azimuth_deg)
