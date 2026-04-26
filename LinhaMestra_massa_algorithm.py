@@ -4,6 +4,7 @@ from qgis.PyQt.QtCore import QCoreApplication, QVariant
 from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
+                       QgsProcessingParameterDefinition,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterField,
@@ -27,6 +28,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
     CRITERIO_PROXIMIDADE = 'CRITERIO_PROXIMIDADE'
     OUTPUT = 'OUTPUT'
     CONEXAO_OUTPUT = 'CONEXAO_OUTPUT'
+    REDUCAO_FILTRO = 'REDUCAO_FILTRO'
 
     def initAlgorithm(self, config):
         self.addParameter(QgsProcessingParameterFeatureSource(
@@ -66,6 +68,17 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 options=['Menor Tamanho', 'Maior Tamanho', 'Menor Ângulo', 'Maior Ângulo', 'Qualquer uma'],
                 defaultValue=0))
 
+        param_reducao = QgsProcessingParameterNumber(
+            self.REDUCAO_FILTRO,
+            self.tr('Redução para Filtro de Cruzamento (metros)'),
+            type=QgsProcessingParameterNumber.Double,
+            minValue=0.0,
+            maxValue=1.0,
+            defaultValue=1
+        )
+        param_reducao.setFlags(QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param_reducao)
+
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT, self.tr('Linhas Mestras'), QgsProcessing.TypeVectorLine))
@@ -83,6 +96,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
         criterio = self.parameterAsInt(parameters, self.CRITERIO_PROXIMIDADE, context)
         estilo_conn = self.parameterAsInt(parameters, self.ESTILO_CONEXAO, context)
         estilo_mestra = self.parameterAsInt(parameters, self.ESTILO_LINHA_MESTRA, context)
+        reducao = self.parameterAsDouble(parameters, self.REDUCAO_FILTRO, context)
 
         # 1. Coletar e Organizar Grupos
         features = list(source.getFeatures())
@@ -161,11 +175,11 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
 
                 if needs_near:
                     near_conns = ConnectionJudge.solve_nearest_with_criteria(g1, g2, criterio, target_n)
-                    near_conns = VectorUtils.filter_connections(near_conns, g1, g2, source.sourceCrs())
+                    near_conns = VectorUtils.filter_connections(near_conns, g1, g2, source.sourceCrs(), reducao)
 
                 if needs_interp:
                     m_res, c_res, p_res = VectorUtils.generate_linhamestra_elements(g1, g2, target_n, feedback)
-                    interp_conns = VectorUtils.filter_connections(c_res, g1, g2, source.sourceCrs())
+                    interp_conns = VectorUtils.filter_connections(c_res, g1, g2, source.sourceCrs(), reducao)
                     perp_results = p_res
 
                 # D. Definir Mestra e Conexão de Saída para este par

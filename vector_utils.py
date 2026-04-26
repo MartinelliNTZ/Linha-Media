@@ -477,17 +477,19 @@ class VectorUtils:
         return mestra_segments
 
     @staticmethod
-    def filter_connections(connections, g1, g2, crs):
+    def filter_connections(connections, g1, g2, crs, delta_m):
         """
         Filtra conexões que cruzam as linhas mãe.
-        Reduz 1cm em cada ponta para evitar falsos positivos nos vértices de contato.
+        Reduz delta_m em cada ponta para evitar falsos positivos nos vértices de contato.
         """
         from .geometry_utils import VectorLayerGeometry
         
-        # 1cm em metros ou equivalente em graus
-        delta = 0.01 
+        # Converte metros para graus se o CRS for geográfico
         if crs.isGeographic():
             delta = 0.01 / 111120.0
+            delta = delta_m / 111120.0
+        else:
+            delta = delta_m
             
         filtered = []
         for conn in connections:

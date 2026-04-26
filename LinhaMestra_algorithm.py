@@ -34,6 +34,7 @@ from qgis.PyQt.QtCore import QCoreApplication, QVariant
 from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
+                       QgsProcessingParameterDefinition,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterNumber,
@@ -73,6 +74,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
     ESTILO_CONEXAO = 'ESTILO_CONEXAO'
     ESTILO_LINHA_MESTRA = 'ESTILO_LINHA_MESTRA'
     PARTICOES = 'PARTICOES'
+    REDUCAO_FILTRO = 'REDUCAO_FILTRO'
 
     def initAlgorithm(self, config):
         self.addParameter(
@@ -130,6 +132,17 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
             )
         )
 
+        param_reducao = QgsProcessingParameterNumber(
+            self.REDUCAO_FILTRO,
+            self.tr('Redução para Filtro de Cruzamento (metros)'),
+            type=QgsProcessingParameterNumber.Double,
+            minValue=0.0,
+            maxValue=1.0,
+            defaultValue=1
+        )
+        param_reducao.setFlags(QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param_reducao)
+
         # We add a feature sink in which to store our processed features (this
         # usually takes the form of a newly created vector layer when the
         # algorithm is run in QGIS).
@@ -156,6 +169,7 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         criterio = self.parameterAsInt(parameters, self.CRITERIO_PROXIMIDADE, context)
         estilo = self.parameterAsInt(parameters, self.ESTILO_CONEXAO, context)
         estilo_mestra = self.parameterAsInt(parameters, self.ESTILO_LINHA_MESTRA, context)
+        reducao = self.parameterAsDouble(parameters, self.REDUCAO_FILTRO, context)
 
         # 1. Extração e Validação (Delegado para VectorUtils)
         linha1, linha2, crs_final = VectorUtils.extract_two_features(source, source2, context)
@@ -182,13 +196,13 @@ class LinhaMestraAlgorithm(QgsProcessingAlgorithm):
         if needs_near:
             feedback.pushInfo(self.tr('Calculando conexões por Proximidade...'))
             near_conns = ConnectionJudge.solve_nearest_with_criteria(g1, g2, criterio, target_n)
-            near_conns = VectorUtils.filter_connections(near_conns, g1, g2, crs_final)
+            near_conns = VectorUtils.filter_connections(near_conns, g1, g2, crs_final, reducao)
 
         # B. Processamento por Interpolação (Ponto a Ponto)
         if needs_interp:
             feedback.pushInfo(self.tr('Calculando conexões por Interpolação...'))
             m_results, c_results, p_results = VectorUtils.generate_linhamestra_elements(g1, g2, target_n, feedback)
-            interp_conns = VectorUtils.filter_connections(c_results, g1, g2, crs_final)
+            interp_conns = VectorUtils.filter_connections(c_results, g1, g2, crs_final, reducao)
             perp_results = p_results # As perpendiculares são geradas no fluxo de interpolação
             interp_mestra_results = m_results
 
