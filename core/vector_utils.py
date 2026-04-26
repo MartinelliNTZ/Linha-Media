@@ -209,6 +209,33 @@ class VectorUtils:
         return -point.x() * math.sin(rad) + point.y() * math.cos(rad)
 
     @staticmethod
+    def get_vertex_azimuth(polyline, index):
+        """Calcula o azimute bissetor em um vértice de uma lista de pontos (polyline)."""
+        total = len(polyline)
+        if total < 2: return 0.0
+
+        # Helper para garantir conversão para QgsPointXY (necessário para .azimuth())
+        def to_xy(p):
+            return QgsPointXY(p.x(), p.y())
+
+        p_curr = to_xy(polyline[index])
+
+        if index == 0:
+            return p_curr.azimuth(to_xy(polyline[index+1]))
+        elif index == total - 1:
+            return to_xy(polyline[index-1]).azimuth(p_curr)
+
+        p_prev = to_xy(polyline[index-1])
+        p_next = to_xy(polyline[index+1])
+
+        az1 = p_prev.azimuth(p_curr)
+        az2 = p_curr.azimuth(p_next)
+        diff = az2 - az1
+        if diff > 180: diff -= 360 
+        if diff < -180: diff += 360
+        return (az1 + diff / 2.0) % 360
+
+    @staticmethod
     def calculate_internal_angle(p1, p2, p3):
         """Calcula o ângulo interno em p2 formado pelos segmentos p1-p2 e p2-p3."""
         v1 = (p1.x() - p2.x(), p1.y() - p2.y())
@@ -540,22 +567,7 @@ class VectorUtils:
                 if feedback and feedback.isCanceled(): return []
                 
                 p_curr = QgsPointXY(polyline[i].x(), polyline[i].y())
-                
-                # Calcula o azimute local (bissetriz para vértices internos, segmento único para extremidades)
-                az_mestra = 0.0
-                if i == 0: # Primeiro vértice
-                    az_mestra = p_curr.azimuth(polyline[i+1])
-                elif i == total_vertices - 1: # Último vértice
-                    az_mestra = polyline[i-1].azimuth(p_curr)
-                else: # Vértice interno
-                    az1 = polyline[i-1].azimuth(p_curr)
-                    az2 = p_curr.azimuth(polyline[i+1])
-                    
-                    # Calcula o ângulo bissetor, tratando a quebra 0/360
-                    diff = az2 - az1
-                    if diff > 180: diff -= 360 
-                    if diff < -180: diff += 360
-                    az_mestra = (az1 + diff / 2.0) % 360
+                az_mestra = VectorUtils.get_vertex_azimuth(polyline, i)
 
                 perp_az = (az_mestra + 90) % 360
                 
