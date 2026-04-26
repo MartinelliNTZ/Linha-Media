@@ -133,13 +133,15 @@ class ConnectionJudge:
         g1, g2 = VectorUtils.align_line_pair(geom1, geom2)
 
         use_g1_as_base = True
-        if criteria_idx == 0: # Menor Tamanho
+        if criteria_idx == 0: # Ponto na Ponta -> Meio (Sincronismo)
+            use_g1_as_base = VectorUtils.decide_base_by_endpoint(g1, g2)
+        elif criteria_idx == 1: # Menor Tamanho
             use_g1_as_base = g1.length() <= g2.length()
-        elif criteria_idx == 1: # Maior Tamanho
+        elif criteria_idx == 2: # Maior Tamanho
             use_g1_as_base = g1.length() >= g2.length()
-        elif criteria_idx == 2: # Menor Ângulo (Mais fechada/curva)
+        elif criteria_idx == 3: # Menor Ângulo (Mais fechada/curva)
             use_g1_as_base = VectorUtils.get_line_straightness_score(g1) <= VectorUtils.get_line_straightness_score(g2)
-        elif criteria_idx == 3: # Maior Ângulo (Mais aberta/reta)
+        elif criteria_idx == 4: # Maior Ângulo (Mais aberta/reta)
             use_g1_as_base = VectorUtils.get_line_straightness_score(g1) >= VectorUtils.get_line_straightness_score(g2)
 
         if use_g1_as_base:

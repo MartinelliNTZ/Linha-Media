@@ -68,7 +68,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterEnum(
                 self.CRITERIO_PROXIMIDADE,
                 self.tr('Critério de Proximidade (Escolha da Base)'),
-                options=['Menor Tamanho', 'Maior Tamanho', 'Menor Ângulo', 'Maior Ângulo', 'Qualquer uma'],
+                options=['Ponto na Ponta -> Meio (Sincronismo)', 'Menor Tamanho', 'Maior Tamanho', 'Menor Ângulo', 'Maior Ângulo'],
                 defaultValue=0))
 
         self.addParameter(

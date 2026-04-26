@@ -192,6 +192,42 @@ class VectorUtils:
         return g1, geom2
 
     @staticmethod
+    def decide_base_by_endpoint(geom1, geom2):
+        """
+        Decide qual linha deve ser a 'Base' (Pai) usando a lógica de sincronismo:
+        Retorna True se geom1 for a base, False se for geom2.
+        """
+        def check_endpoint(pt, target_geom):
+            nearest_pt = target_geom.nearestPoint(QgsGeometry.fromPointXY(pt)).asPoint()
+            nodes = list(target_geom.vertices())
+            d_start = nearest_pt.distance(QgsPointXY(nodes[0].x(), nodes[0].y()))
+            d_end = nearest_pt.distance(QgsPointXY(nodes[-1].x(), nodes[-1].y()))
+            # Consideramos 'meio' se estiver a mais de 1cm das pontas
+            is_mid = d_start > 0.01 and d_end > 0.01
+            return is_mid, pt.distance(nearest_pt)
+
+        v1 = list(geom1.vertices())
+        v2 = list(geom2.vertices())
+        if not v1 or not v2: return True
+
+        tests = [
+            ('L1', check_endpoint(QgsPointXY(v1[0].x(), v1[0].y()), geom2)),
+            ('L1', check_endpoint(QgsPointXY(v1[-1].x(), v1[-1].y()), geom2)),
+            ('L2', check_endpoint(QgsPointXY(v2[0].x(), v2[0].y()), geom1)),
+            ('L2', check_endpoint(QgsPointXY(v2[-1].x(), v2[-1].y()), geom1))
+        ]
+
+        # Prioridade 1: Quem liga no meio ganha (is_mid == True)
+        mids = [t for t in tests if t[1][0]]
+        if mids:
+            winner = min(mids, key=lambda x: x[1][1])
+            return winner[0] == 'L1'
+
+        # Prioridade 2: Menor distância absoluta entre pontas
+        winner = min(tests, key=lambda x: x[1][1])
+        return winner[0] == 'L1'
+
+    @staticmethod
     def align_by_endpoint_logic(geom1, geom2):
         """
         Determina Pai/Mãe e alinhamento baseado na regra:
