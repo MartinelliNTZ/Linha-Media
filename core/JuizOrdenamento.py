@@ -25,6 +25,7 @@ class JuizOrdenamento:
 
     METODO_ARBITRARIO = 0
     METODO_BORDA = 1
+    METODO_GRAFO = 2
 
     EPSILON = 0.5
 
@@ -78,6 +79,51 @@ class JuizOrdenamento:
             return None, 0
         return sum(ranks) / len(ranks), len(ranks)
 
+    def _calc_grafo_scores(self, perfis):
+        """
+        Implementa agregação por Grafo de Precedência (Método de Copeland).
+        Calcula vitórias e derrotas em confrontos diretos entre cada par de curvas.
+        """
+        n = len(perfis)
+        # matriz_confrontos[i][j] = quantas vezes a curva i veio antes da curva j
+        matriz = [[0] * n for _ in range(n)]
+        
+        # 1. Mapear sensores (colunas lnPri/lnSec) para quem eles viram
+        sensores = {} # { 'col_name': [(rank, perf_idx), ...] }
+        for idx, p in enumerate(perfis):
+            feat = p['feat']
+            for prefix in ['lnPri', 'lnSec']:
+                n_cols = self._n_cols(feat, prefix)
+                for i in range(n_cols):
+                    col = f"{prefix}{i}"
+                    try:
+                        r = int(feat[col]) if feat[col] not in (None, '', 'NULL') else 0
+                        if r > 0:
+                            if col not in sensores: sensores[col] = []
+                            sensores[col].append((r, idx))
+                    except: continue
+
+        # 2. Preencher matriz de precedência (Pairwise Comparison)
+        for col, hits in sensores.items():
+            hits.sort() # Ordena pelo rank que o sensor deu
+            for i in range(len(hits)):
+                for j in range(i + 1, len(hits)):
+                    vencedor_idx = hits[i][1]
+                    perdedor_idx = hits[j][1]
+                    matriz[vencedor_idx][perdedor_idx] += 1
+
+        # 3. Calcular Score de Copeland (Vitórias Líquidas)
+        scores = [0] * n
+        for i in range(n):
+            for j in range(i + 1, n):
+                if matriz[i][j] > matriz[j][i]:
+                    scores[i] += 1
+                    scores[j] -= 1
+                elif matriz[j][i] > matriz[i][j]:
+                    scores[j] += 1
+                    scores[i] -= 1
+        return scores
+
     # ── perfil ─────────────────────────────────────────────────────────
 
     def _perfil(self, feat):
@@ -93,6 +139,7 @@ class JuizOrdenamento:
             'sec_pos': sec_pos,
             'borda_avg': b_avg,
             'borda_hits': b_hits,
+            'grafo_score': 0, # Populado depois se necessário
             'orfao':   pri_pos is None and sec_pos is None,
             'ordem':   None,
         }
@@ -113,7 +160,22 @@ class JuizOrdenamento:
         normais = [p for p in perfis if not p['orfao']]
         orfaos  = [p for p in perfis if p['orfao']]
 
+        # Se for método de grafo, calcula os scores globais antes de ordenar
+        if metodo == self.METODO_GRAFO and normais:
+            g_scores = self._calc_grafo_scores(normais)
+            for i, p in enumerate(normais):
+                p['grafo_score'] = g_scores[i]
+
         def sort_key(p):
+            if metodo == self.METODO_GRAFO:
+                # Ordena pelo Score de Copeland (mais vitórias primeiro)
+                # Desempate pelo Borda e depois Espacial
+                return (
+                    -p['grafo_score'],
+                    p['borda_avg'] if p['borda_avg'] is not None else 999999,
+                    -p['borda_hits']
+                )
+
             if metodo == self.METODO_BORDA:
                 # 1. Média de Ranks (Borda)
                 # 2. Total de Votos (Hits) - maior primeiro (mais confiança)

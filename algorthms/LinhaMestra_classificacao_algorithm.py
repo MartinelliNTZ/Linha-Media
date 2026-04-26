@@ -4,10 +4,10 @@ from qgis.PyQt.QtCore import QCoreApplication, QVariant
 from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
+                       QgsProcessingParameterDefinition,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterNumber,
-                       QgsProcessingParameterEnum,
                        QgsProcessingParameterEnum,
                        QgsWkbTypes,
                        QgsGeometry,
@@ -28,6 +28,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
     THRESHOLD = 'THRESHOLD'
     AXIS_MODE = 'AXIS_MODE'
     JUDGE_METHOD = 'JUDGE_METHOD'
+    N_LINES = 'N_LINES'
 
     def tr(self, string):
         return QCoreApplication.translate('LinhaMestraClassificacaoAlgorithm', string)
@@ -82,10 +83,20 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterEnum(
                 self.JUDGE_METHOD,
                 self.tr('Método de Julgamento (Juiz)'),
-                options=['Arbitrário (Espacial)', 'Borda Count Adaptado (Consenso)'],
-                defaultValue=1
+                options=['Arbitrário (Espacial)', 'Borda Count Adaptado (Consenso)', 'Grafo de Precedência (Pairwise)'],
+                defaultValue=2
             )
         )
+        param_n_lines = QgsProcessingParameterNumber(
+            self.N_LINES,
+            self.tr('Número de Linhas do Grid (Resolução)'),
+            type=QgsProcessingParameterNumber.Integer,
+            defaultValue=50,
+            minValue=5,
+            maxValue=100
+        )
+        param_n_lines.setFlags(QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param_n_lines)
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT_AXES,
@@ -228,6 +239,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         threshold = self.parameterAsDouble(parameters, self.THRESHOLD, context)
         axis_mode = self.parameterAsInt(parameters, self.AXIS_MODE, context)
         judge_method = self.parameterAsInt(parameters, self.JUDGE_METHOD, context)
+        n_lines_param = self.parameterAsInt(parameters, self.N_LINES, context)
         features = list(source.getFeatures())
 
         extent = source.sourceExtent()
@@ -350,8 +362,6 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         #   - Varredura na direção do EIXO PRIMÁRIO
         #   - Espaçamento = extensão real das curvas no eixo primário / (N-1)
         # ----------------------------------------------------------------
-        N_LINES = 21  # número de linhas em cada direção
-
         # Vetores unitários
         pri_ux, pri_uy = primary['ux'], primary['uy']
         sec_ux, sec_uy = secondary['ux'], secondary['uy']
@@ -366,7 +376,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             features, center,
             sweep_ux=sec_ux, sweep_uy=sec_uy,   # desloca nesta direção
             line_ux=pri_ux,  line_uy=pri_uy,    # linha tem esta direção
-            n_lines=N_LINES,
+            n_lines=n_lines_param,
             bbox_half_diag=bbox_half_diag
         )
 
@@ -375,13 +385,13 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             features, center,
             sweep_ux=pri_ux, sweep_uy=pri_uy,   # desloca nesta direção
             line_ux=sec_ux,  line_uy=sec_uy,    # linha tem esta direção
-            n_lines=N_LINES,
+            n_lines=n_lines_param,
             bbox_half_diag=bbox_half_diag
         )
 
-        if len(grid_primary) < N_LINES or len(grid_secondary) < N_LINES:
+        if len(grid_primary) < n_lines_param or len(grid_secondary) < n_lines_param:
             feedback.reportError(
-                self.tr(f"Aviso: Grid incompleto. Esperado {N_LINES}, gerado Pri:{len(grid_primary)} Sec:{len(grid_secondary)}")
+                self.tr(f"Aviso: Grid incompleto. Esperado {n_lines_param}, gerado Pri:{len(grid_primary)} Sec:{len(grid_secondary)}")
             )
 
         # ----------------------------------------------------------------
@@ -470,8 +480,8 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
 
         # Limpeza de schema (evita conflito com runs anteriores)
         skip_names = ['tipo_line', 'soma_pri', 'media_pri', 'soma_sec', 'media_sec', 'ordem_espacial']
-        skip_names += [f'lnPri{i}' for i in range(30)]
-        skip_names += [f'lnSec{i}' for i in range(30)]
+        skip_names += [f'lnPri{i}' for i in range(101)] # Limpa até 100 para segurança
+        skip_names += [f'lnSec{i}' for i in range(101)]
 
         output_fields = QgsFields()
         indices_originais = []
