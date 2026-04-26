@@ -8,6 +8,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterNumber,
                        QgsProcessingParameterEnum,
+                       QgsProcessingParameterEnum,
                        QgsWkbTypes,
                        QgsGeometry,
                        QgsFeature,
@@ -26,6 +27,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_CLASSIFIERS = 'OUTPUT_CLASSIFIERS'
     THRESHOLD = 'THRESHOLD'
     AXIS_MODE = 'AXIS_MODE'
+    JUDGE_METHOD = 'JUDGE_METHOD'
 
     def tr(self, string):
         return QCoreApplication.translate('LinhaMestraClassificacaoAlgorithm', string)
@@ -73,6 +75,14 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
                 self.AXIS_MODE,
                 self.tr('Modo de Geração de Eixos'),
                 options=['Ponto a Ponto (Morfologia Real)', 'Eixos Fixos (Grid Ortogonal)'],
+                defaultValue=1
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.JUDGE_METHOD,
+                self.tr('Método de Julgamento (Juiz)'),
+                options=['Arbitrário (Espacial)', 'Borda Count Adaptado (Consenso)'],
                 defaultValue=1
             )
         )
@@ -217,6 +227,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         threshold = self.parameterAsDouble(parameters, self.THRESHOLD, context)
         axis_mode = self.parameterAsInt(parameters, self.AXIS_MODE, context)
+        judge_method = self.parameterAsInt(parameters, self.JUDGE_METHOD, context)
         features = list(source.getFeatures())
 
         extent = source.sourceExtent()
@@ -518,7 +529,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         # 6. JULGAMENTO PELO JUIZ DE ORDENAMENTO
         # ----------------------------------------------------------------
         juiz = JuizOrdenamento(primary['name'])
-        ordenados = juiz.julgar(prepared_features)
+        ordenados = juiz.julgar(prepared_features, judge_method)
 
         for out_f, ordem in ordenados:
             if feedback.isCanceled(): break

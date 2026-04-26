@@ -23,6 +23,9 @@ class JuizOrdenamento:
     Órfãos (sem nenhuma intersecção) ficam ao final, em ordem de chegada.
     """
 
+    METODO_ARBITRARIO = 0
+    METODO_BORDA = 1
+
     EPSILON = 0.5
 
     def __init__(self, eixo_primario):
@@ -60,6 +63,21 @@ class JuizOrdenamento:
                 sw += w
         return (covered, si / sw) if covered else ([], None)
 
+    def _borda_score(self, feat):
+        """Média das posições (ranks) atribuídas e contagem de votos (hits)."""
+        ranks = []
+        for prefix in ['lnPri', 'lnSec']:
+            n = self._n_cols(feat, prefix)
+            for i in range(n):
+                try:
+                    v = feat['%s%d' % (prefix, i)]
+                    r = int(v) if v not in (None, '', 'NULL') else 0
+                    if r > 0: ranks.append(r)
+                except: continue
+        if not ranks:
+            return None, 0
+        return sum(ranks) / len(ranks), len(ranks)
+
     # ── perfil ─────────────────────────────────────────────────────────
 
     def _perfil(self, feat):
@@ -67,10 +85,14 @@ class JuizOrdenamento:
         n_sec = self._n_cols(feat, 'lnSec')
         _, pri_pos = self._pos_ponderada(feat, 'lnPri', n_pri)
         _, sec_pos = self._pos_ponderada(feat, 'lnSec', n_sec)
+        b_avg, b_hits = self._borda_score(feat)
+
         return {
             'feat':    feat,
             'pri_pos': pri_pos,
             'sec_pos': sec_pos,
+            'borda_avg': b_avg,
+            'borda_hits': b_hits,
             'orfao':   pri_pos is None and sec_pos is None,
             'ordem':   None,
         }
@@ -84,15 +106,30 @@ class JuizOrdenamento:
 
     # ── julgamento ─────────────────────────────────────────────────────
 
-    def julgar(self, features):
+    def julgar(self, features, metodo=METODO_BORDA):
         from itertools import groupby
 
         perfis  = [self._perfil(f) for f in features]
         normais = [p for p in perfis if not p['orfao']]
         orfaos  = [p for p in perfis if p['orfao']]
 
-        # Ordena: primário, depois secundário; None vai para o final
         def sort_key(p):
+            if metodo == self.METODO_BORDA:
+                # 1. Média de Ranks (Borda)
+                # 2. Total de Votos (Hits) - maior primeiro (mais confiança)
+                # 3. Posição Espacial (Desempate)
+                avg = p['borda_avg'] if p['borda_avg'] is not None else 999999
+                k1, k2 = self._chave(p)
+                return (
+                    avg,
+                    -p['borda_hits'],
+                    0 if k1 is not None else 1,
+                    k1 if k1 is not None else 0.0,
+                    0 if k2 is not None else 1,
+                    k2 if k2 is not None else 0.0,
+                )
+
+            # METODO_ARBITRARIO: Ordena: primário, depois secundário
             k1, k2 = self._chave(p)
             return (
                 0 if k1 is not None else 1,
@@ -107,20 +144,24 @@ class JuizOrdenamento:
         contador  = 1
         chave_ant = None
         for p in normais:
-            c = self._chave(p)
+            c = sort_key(p)
             if chave_ant is not None:
-                k1_ant, k2_ant = chave_ant
-                k1, k2 = c
-                muda_pri = (k1 is None) != (k1_ant is None) or (
-                    k1 is not None and k1_ant is not None and
-                    abs(k1 - k1_ant) >= self.EPSILON
-                )
-                muda_sec = (k2 is None) != (k2_ant is None) or (
-                    k2 is not None and k2_ant is not None and
-                    abs(k2 - k2_ant) >= self.EPSILON
-                )
-                if muda_pri or muda_sec:
-                    contador += 1
+                if metodo == self.METODO_ARBITRARIO:
+                    k1_ant, k2_ant = chave_ant[1], chave_ant[3]
+                    k1, k2 = c[1], c[3]
+                    muda_pri = (k1 is None) != (k1_ant is None) or (
+                        k1 is not None and k1_ant is not None and
+                        abs(k1 - k1_ant) >= self.EPSILON
+                    )
+                    muda_sec = (k2 is None) != (k2_ant is None) or (
+                        k2 is not None and k2_ant is not None and
+                        abs(k2 - k2_ant) >= self.EPSILON
+                    )
+                    if muda_pri or muda_sec: contador += 1
+                else:
+                    # No Borda, qualquer mudança na chave de ordenação gera nova ordem
+                    if c != chave_ant: contador += 1
+
             p['ordem'] = contador
             chave_ant = c
 
