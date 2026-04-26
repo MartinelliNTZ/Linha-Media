@@ -512,7 +512,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         # ----------------------------------------------------------------
 
         # 1. Definir Schema INTERNO (para o Juiz trabalhar)
-        skip_names = ['tipo_line', 'soma_pri', 'media_pri', 'soma_sec', 'media_sec', 'ordem_espacial']
+        skip_names = ['id', 'tipo_line', 'soma_pri', 'media_pri', 'soma_sec', 'media_sec', 'ordem_espacial']
         skip_names += [f'lnPri{i}' for i in range(101)] # Limpa até 100 para segurança
         skip_names += [f'lnSec{i}' for i in range(101)]
 
@@ -538,6 +538,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
 
         # 2. Definir Schema FINAL (O que o usuário verá)
         fields_final = QgsFields(internal_fields)
+        fields_final.append(QgsField('id', QVariant.LongLong))
         fields_final.append(QgsField('tipo_line', QVariant.String))
         fields_final.append(QgsField('ordem_espacial', QVariant.Int))
 
@@ -563,6 +564,9 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
 
             out_f = QgsFeature(fields_processing)
             out_f.setGeometry(feat.geometry())
+            
+            # Garante que o ID da feição seja preservado para o Juiz e Sensores
+            out_f.setId(feat.id())
 
             new_attrs = [feat.attribute(idx) for idx in indices_originais]
             new_attrs.append(tipo)
@@ -589,6 +593,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             
             # Coletar apenas atributos originais + tipo_line + ordem_espacial
             final_attrs = [out_f.attribute(internal_fields.at(i).name()) for i in range(len(internal_fields))]
+            final_attrs.append(out_f.id()) # Novo campo ID limpo e sincronizado
             final_attrs.append(out_f.attribute('tipo_line'))
             final_attrs.append(ordem)
             
