@@ -9,6 +9,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterField,
                        QgsProcessingParameterNumber,
+                       QgsProcessingParameterBoolean,
                        QgsProcessingParameterEnum,
                        QgsProcessingException,
                        QgsFeature,
@@ -29,6 +30,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
     OUTPUT = 'OUTPUT'
     CONEXAO_OUTPUT = 'CONEXAO_OUTPUT'
     REDUCAO_FILTRO = 'REDUCAO_FILTRO'
+    RESOLVER_ORFAOS_PONTAS = 'RESOLVER_ORFAOS_PONTAS'
     ESPACAMENTO = 'ESPACAMENTO'
 
     def initAlgorithm(self, config):
@@ -70,6 +72,14 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 defaultValue=0))
 
         self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.RESOLVER_ORFAOS_PONTAS,
+                self.tr('Resolver órfãos das pontas no método de Proximidade'),
+                defaultValue=True
+            )
+        )
+
+        self.addParameter(
             QgsProcessingParameterNumber(
                 self.ESPACAMENTO,
                 self.tr('Espaçamento Fixo (Metros)'),
@@ -107,6 +117,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
         criterio = self.parameterAsInt(parameters, self.CRITERIO_PROXIMIDADE, context)
         estilo_conn = self.parameterAsInt(parameters, self.ESTILO_CONEXAO, context)
         estilo_mestra = self.parameterAsInt(parameters, self.ESTILO_LINHA_MESTRA, context)
+        resolve_pontas = self.parameterAsBool(parameters, self.RESOLVER_ORFAOS_PONTAS, context)
         reducao = self.parameterAsDouble(parameters, self.REDUCAO_FILTRO, context)
         espacamento = self.parameterAsDouble(parameters, self.ESPACAMENTO, context)
 
@@ -188,7 +199,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 perp_results = []
 
                 if needs_near:
-                    near_conns = ConnectionJudge.solve_nearest_with_criteria(g1, g2, criterio, target_n)
+                    near_conns = ConnectionJudge.solve_nearest_with_criteria(g1, g2, criterio, target_n, resolve_pontas)
                     near_conns = VectorUtils.filter_connections(near_conns, g1, g2, source.sourceCrs(), reducao)
 
                 if needs_interp:
