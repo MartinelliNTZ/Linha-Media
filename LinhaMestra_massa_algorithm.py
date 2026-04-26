@@ -75,7 +75,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterBoolean(
                 self.RESOLVER_ORFAOS_PONTAS,
                 self.tr('Resolver órfãos das pontas no método de Proximidade'),
-                defaultValue=True
+                defaultValue=False
             )
         )
 
