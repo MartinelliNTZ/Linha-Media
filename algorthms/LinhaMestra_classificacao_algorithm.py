@@ -138,7 +138,14 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
         # 4. Escaneamento e OUTPUT 3
         fields_lines = source.fields()
         fields_lines.append(QgsField('tipo_line', QVariant.String))
-        fields_lines.append(QgsField('id_spatial', QVariant.String))
+        
+        # Adiciona os 21 campos de classificação lclas0 a lclas20
+        for i in range(21):
+            fields_lines.append(QgsField(f'lclas{i}', QVariant.Int))
+            
+        fields_lines.append(QgsField('soma_notas', QVariant.Double))
+        fields_lines.append(QgsField('media_notas', QVariant.Double))
+
         (sink_lines, dest_lines) = self.parameterAsSink(parameters, self.OUTPUT_LINES, context, fields_lines, QgsWkbTypes.LineString, source.sourceCrs())
 
         # Regra de sentido: Qual ponto da linha de offset é o "Início"?
@@ -150,7 +157,10 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             return line_pts[0]
 
         contour_features = list(source.getFeatures())
-        classification_results = {f.id(): [] for f in contour_features}
+        
+        # Estrutura para guardar as notas: { feature_id: { index_classificador: nota } }
+        # Inicializamos com 0 (não tocado)
+        classification_results = {f.id(): {i: 0 for i in range(21)} for f in contour_features}
 
         for c_idx, c_line in enumerate(classifier_lines):
             c_geom = QgsGeometry.fromPolylineXY(c_line)
@@ -168,7 +178,7 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             # Ordena quem a linha de offset tocou primeiro
             hits.sort(key=lambda x: x[1])
             for rank, (fid, _) in enumerate(hits, 1):
-                classification_results[fid].append(f"L{c_idx-10}_R{rank}")
+                classification_results[fid][c_idx] = rank
 
         # Salvar Curvas Finalizadas
         for feat in contour_features:
@@ -176,11 +186,22 @@ class LinhaMestraClassificacaoAlgorithm(QgsProcessingAlgorithm):
             out_f.setGeometry(feat.geometry())
             
             tipo, _, _ = VectorUtils.classify_line_morphology(feat.geometry(), threshold)
-            ids_spat = ",".join(classification_results[feat.id()])
             
+            # Coleta as notas de lclas0 a lclas20
+            notas = [classification_results[feat.id()][i] for i in range(21)]
+            soma = sum(notas)
+            
+            # Média apenas das linhas que efetivamente tocaram a curva (valor > 0)
+            hits_count = len([n for n in notas if n > 0])
+            media = soma / hits_count if hits_count > 0 else 0
+
             attrs = feat.attributes()
             attrs.append(tipo)
-            attrs.append(ids_spat)
+            
+            attrs.extend(notas) # Adiciona lclas0...lclas20
+            attrs.append(soma)
+            attrs.append(media)
+            
             out_f.setAttributes(attrs)
             sink_lines.addFeature(out_f)
 
