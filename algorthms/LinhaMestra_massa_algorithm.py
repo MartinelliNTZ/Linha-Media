@@ -334,7 +334,10 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 # B. Cálculo dinâmico do alvo de partições
                 v_count1 = sum(1 for _ in g1.vertices())
                 v_count2 = sum(1 for _ in g2.vertices())
-                target_n = max(particoes, v_count1 - 1, v_count2 - 1)
+                
+                # Agora utilizamos a densidade natural da geometria. 
+                # No modo automático, a linha já foi fatiada em n partições na etapa anterior.
+                target_n = max(v_count1 - 1, v_count2 - 1)
 
                 # C. Pipeline Otimizada
                 needs_near = (estilo_mestra == 1 or estilo_conn == 0)
