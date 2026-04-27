@@ -101,8 +101,11 @@ class LinhaPerpendicularMediaAlgorithm(QgsProcessingAlgorithm):
 
 
         fields_output = QgsFields()
-        fields_output.append(QgsField('original_id', QVariant.Int))
+        fields_output.append(QgsField('parent_id', QVariant.LongLong))
         fields_output.append(QgsField('vertex_id', QVariant.Int))
+        fields_output.append(QgsField('azimuth', QVariant.Double))
+        fields_output.append(QgsField('touch_id', QVariant.LongLong))
+        fields_output.append(QgsField('side', QVariant.String))
 
         (sink, dest_id) = self.parameterAsSink(
             parameters, 
