@@ -9,6 +9,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterNumber,
                        QgsProcessingParameterBoolean,
                        QgsProcessingException,
+                       QgsProcessingParameterEnum,
                        QgsFeature,
                        QgsGeometry,
                        QgsPointXY,
@@ -23,6 +24,7 @@ class LinhaPerpendicularMediaAlgorithm(QgsProcessingAlgorithm):
     INPUT_LINE = 'INPUT_LINE'
     INPUT_LINES_MAES = 'INPUT_LINES_MAES'
     DISTANCE = 'DISTANCE'
+    ESTILO_CONEXAO = 'ESTILO_CONEXAO'
     TRIM_COLLISION = 'TRIM_COLLISION'
     OUTPUT = 'OUTPUT'
 
@@ -47,8 +49,16 @@ class LinhaPerpendicularMediaAlgorithm(QgsProcessingAlgorithm):
                 self.DISTANCE,
                 self.tr('Distância Fixa (se não houver Linhas Mães)'),
                 type=QgsProcessingParameterNumber.Double,
-                defaultValue=10.0,
+                defaultValue=500,
                 minValue=0.1
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.ESTILO_CONEXAO,
+                self.tr('Estilo de Conexão'),
+                options=['Proximidade', 'Perpendicular'],
+                defaultValue=0
             )
         )
         self.addParameter(
@@ -70,6 +80,7 @@ class LinhaPerpendicularMediaAlgorithm(QgsProcessingAlgorithm):
         input_line_source = self.parameterAsSource(parameters, self.INPUT_LINE, context)
         input_maes_source = self.parameterAsSource(parameters, self.INPUT_LINES_MAES, context)
         distance = self.parameterAsDouble(parameters, self.DISTANCE, context)
+        estilo_conexao = self.parameterAsInt(parameters, self.ESTILO_CONEXAO, context)
         trim_collision = self.parameterAsBool(parameters, self.TRIM_COLLISION, context)
 
         if input_line_source is None:
@@ -142,39 +153,58 @@ class LinhaPerpendicularMediaAlgorithm(QgsProcessingAlgorithm):
                                          p_start.y() + max_ray_len * math.cos(rad))
                     
                     ray_geom = QgsGeometry.fromPolylineXY([p_start, p_target])
-                    final_p_end = p_target
-                    touch_id = -1
+                    
+                    hit_geom = None
+                    hit_id = -1
+                    impact_pt = None
+                    min_dist = float('inf')
 
-                    # 1. Se houver linhas mães, o limite é o toque nelas
+                    # 1. Intersecção com Linhas Mães (Fronteiras de busca)
                     if mother_line1_geom:
-                        closest_mother_dist = float('inf')
                         for m_geom in [mother_line1_geom, mother_line2_geom]:
                             inter = ray_geom.intersection(m_geom)
                             if not inter.isEmpty():
                                 pt = VectorUtils._get_closest_point(inter, p_start)
-                                if pt and p_start.distance(pt) < closest_mother_dist:
-                                    closest_mother_dist = p_start.distance(pt)
-                                    final_p_end = pt
-                        # Atualiza a geometria do raio para o limite da mãe
-                        ray_geom = QgsGeometry.fromPolylineXY([p_start, final_p_end])
+                                if pt:
+                                    d = p_start.distance(pt)
+                                    if d < min_dist:
+                                        min_dist = d
+                                        hit_geom = m_geom
+                                        impact_pt = pt
 
-                    # 2. Se trim ativado, corta na primeira linha da própria camada
+                    # 2. Intersecção com outras curvas da camada (Sondagem de vizinhança)
                     if trim_collision:
                         candidates = spatial_index.intersects(ray_geom.boundingBox())
-                        closest_touch_dist = float('inf')
-                        
                         for c_id in candidates:
                             if c_id == feature.id(): continue
-                            
                             inter = ray_geom.intersection(feat_dict[c_id].geometry())
                             if not inter.isEmpty():
                                 pt = VectorUtils._get_closest_point(inter, p_start)
                                 if pt:
                                     d = p_start.distance(pt)
-                                    if 0.001 < d < closest_touch_dist:
-                                        closest_touch_dist = d
-                                        touch_id = c_id
-                                        final_p_end = pt
+                                    # Margem de precisão para evitar auto-intersecção
+                                    if 0.001 < d < min_dist:
+                                        min_dist = d
+                                        hit_geom = feat_dict[c_id].geometry()
+                                        hit_id = c_id
+                                        impact_pt = pt
+
+                    # 3. Definição do Segmento Final baseado no Estilo Escolhido
+                    if hit_geom is None:
+                        # No modo Proximidade, se não houve colisão, descartamos o segmento
+                        if estilo_conexao == 0: 
+                            continue
+                        final_p_end = p_target
+                        touch_id = -1
+                    else:
+                        # Se houve colisão:
+                        if estilo_conexao == 0: # Proximidade: Busca ponto mais próximo na geometria do vizinho atingido
+                            p_prox = VectorUtils._get_closest_point(hit_geom, p_start)
+                            final_p_end = p_prox if p_prox else impact_pt
+                            touch_id = hit_id
+                        else: # Perpendicular: Corta exatamente no ponto de impacto do raio
+                            final_p_end = impact_pt
+                            touch_id = hit_id
 
                     # Criar feição do segmento quebrado
                     feat_out = QgsFeature(fields_output)
@@ -183,7 +213,7 @@ class LinhaPerpendicularMediaAlgorithm(QgsProcessingAlgorithm):
                         feature.id(),
                         v_idx + 1,
                         az_ray,
-                        touch_id,
+                        int(touch_id),
                         VectorUtils.get_cardinal_direction(az_ray)
                     ])
                     sink.addFeature(feat_out, QgsFeatureSink.FastInsert)
