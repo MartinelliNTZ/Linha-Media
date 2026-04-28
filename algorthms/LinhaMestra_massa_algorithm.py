@@ -296,7 +296,8 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                             contador_segmentos, id_mae):
         """
         Quebra a geometria onde os vizinhos mudam.
-        Retorna: lista de segmentos [{ 'geom', 'id_seg', 'parent_id', 'vizinhos_set' }]
+        Retorna: lista de segmentos [{ 'geom', 'id_seg', 'parent_id' }]
+        NOTA: não escreve segmentos nos sinks ainda (adiado para após ETAPA 3)
         """
         geom = feat.geometry()
         if not vizinhos_por_vertice:
@@ -318,43 +319,10 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 seg_id = 'S{}'.format(contador_segmentos[0])
                 contador_segmentos[0] += 1
 
-                viz_set = set()
-                if viz_tuplas[start_idx][0]:
-                    viz_set.add(viz_tuplas[start_idx][0])
-                if viz_tuplas[start_idx][1]:
-                    viz_set.add(viz_tuplas[start_idx][1])
-
-                # Escrever segmento
-                viz_str = ','.join(sorted(viz_set))
-                seg_attrs = [
-                    seg_id,
-                    id_mae,
-                    viz_str,
-                    len(viz_set),
-                    round(seg_geom.length(), 4)
-                ]
-                feat_seg = VectorUtils.create_feature(seg_geom, fields_segmentos, seg_attrs)
-                sink_segmentos.addFeature(feat_seg, QgsFeatureSink.FastInsert)
-
-                # Escrever vértices do segmento
-                pts_seg = VectorUtils.get_equidistant_points(seg_geom, particoes + 1)
-                for vi, pt in enumerate(pts_seg):
-                    vert_attrs = [
-                        '{}_{}'.format(seg_id, vi),
-                        seg_id,
-                        vi,
-                        round(pt.x(), 4),
-                        round(pt.y(), 4)
-                    ]
-                    feat_v = VectorUtils.create_feature(
-                        QgsGeometry.fromPointXY(pt), fields_vertices, vert_attrs)
-                    sink_vertices.addFeature(feat_v, QgsFeatureSink.FastInsert)
-
                 segmentos.append({
                     'geom': seg_geom,
                     'id_seg': seg_id,
-                    'parent_id': id_mae,
-                    'vizinhos_set': viz_set
+                    'parent_id': id_mae
                 })
                 start_idx = i
 
@@ -366,41 +334,10 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
         seg_id = 'S{}'.format(contador_segmentos[0])
         contador_segmentos[0] += 1
 
-        viz_set = set()
-        if viz_tuplas[start_idx][0]:
-            viz_set.add(viz_tuplas[start_idx][0])
-        if viz_tuplas[start_idx][1]:
-            viz_set.add(viz_tuplas[start_idx][1])
-
-        viz_str = ','.join(sorted(viz_set))
-        seg_attrs = [
-            seg_id,
-            id_mae,
-            viz_str,
-            len(viz_set),
-            round(seg_geom_final.length(), 4)
-        ]
-        feat_seg = VectorUtils.create_feature(seg_geom_final, fields_segmentos, seg_attrs)
-        sink_segmentos.addFeature(feat_seg, QgsFeatureSink.FastInsert)
-
-        pts_seg = VectorUtils.get_equidistant_points(seg_geom_final, particoes + 1)
-        for vi, pt in enumerate(pts_seg):
-            vert_attrs = [
-                '{}_{}'.format(seg_id, vi),
-                seg_id,
-                vi,
-                round(pt.x(), 4),
-                round(pt.y(), 4)
-            ]
-            feat_v = VectorUtils.create_feature(
-                QgsGeometry.fromPointXY(pt), fields_vertices, vert_attrs)
-            sink_vertices.addFeature(feat_v, QgsFeatureSink.FastInsert)
-
         segmentos.append({
             'geom': seg_geom_final,
             'id_seg': seg_id,
-            'parent_id': id_mae,
-            'vizinhos_set': viz_set
+            'parent_id': id_mae
         })
         return segmentos
 
@@ -695,6 +632,34 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                         sink_consulta_2.addFeature(feat_s, QgsFeatureSink.FastInsert)
 
                 vizinhos_por_segmento[id_mae_seg] = viz_set_global
+
+            # Escrever OUTPUT_SEGMENTOS com vizinhos corretos (S0, S1, ...)
+            for seg in todos_segmentos:
+                viz_corretos = vizinhos_por_segmento.get(seg['id_seg'], set())
+                viz_str = ','.join(sorted(viz_corretos)) if viz_corretos else ''
+                seg_attrs = [
+                    seg['id_seg'],
+                    seg['parent_id'],
+                    viz_str,
+                    len(viz_corretos),
+                    round(seg['geom'].length(), 4)
+                ]
+                feat_seg = VectorUtils.create_feature(seg['geom'], fields_segmentos, seg_attrs)
+                sink_segmentos.addFeature(feat_seg, QgsFeatureSink.FastInsert)
+
+                # Escrever vértices do segmento
+                pts_seg = VectorUtils.get_equidistant_points(seg['geom'], particoes + 1)
+                for vi, pt in enumerate(pts_seg):
+                    vert_attrs = [
+                        '{}_{}'.format(seg['id_seg'], vi),
+                        seg['id_seg'],
+                        vi,
+                        round(pt.x(), 4),
+                        round(pt.y(), 4)
+                    ]
+                    feat_v = VectorUtils.create_feature(
+                        QgsGeometry.fromPointXY(pt), fields_vertices, vert_attrs)
+                    sink_vertices.addFeature(feat_v, QgsFeatureSink.FastInsert)
 
             # ----------------------------------------------------------
             # ETAPA 4: PROCESSAMENTO DE PARES (Proximidade × Proximidade)
