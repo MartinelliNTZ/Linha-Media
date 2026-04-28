@@ -125,12 +125,42 @@ class ConnectionJudge:
         return idx
 
     @staticmethod
+    def _ensure_same_direction(g1, g2):
+        """
+        Garante que g1 e g2 estejam na mesma direção de percurso.
+        Compara os azimutes do início ao fim. Se diferirem mais que 90°, inverte g2.
+        """
+        pts1 = list(g1.vertices())
+        pts2 = list(g2.vertices())
+        if len(pts1) < 2 or len(pts2) < 2:
+            return g1, g2
+        
+        start1 = QgsPointXY(pts1[0].x(), pts1[0].y())
+        end1 = QgsPointXY(pts1[-1].x(), pts1[-1].y())
+        start2 = QgsPointXY(pts2[0].x(), pts2[0].y())
+        end2 = QgsPointXY(pts2[-1].x(), pts2[-1].y())
+        
+        az1 = start1.azimuth(end1)
+        az2 = start2.azimuth(end2)
+        
+        diff = abs(az1 - az2)
+        if diff > 180:
+            diff = 360 - diff
+        
+        if diff > 90:
+            return g1, VectorUtils.reverse_geometry(g2)
+        return g1, g2
+
+    @staticmethod
     def solve_nearest_with_criteria(geom1, geom2, criteria_idx, target_n, resolve_endpoints=True):
         """
         Executa o julgamento para decidir qual linha será a base conforme o critério.
         """
         # 1. Alinhamento prévio para garantir que os vértices 0 coincidam espacialmente
         g1, g2 = VectorUtils.align_line_pair(geom1, geom2)
+        
+        # 1b. Verificação de direção: ambas devem percorrer no mesmo sentido
+        g1, g2 = ConnectionJudge._ensure_same_direction(g1, g2)
 
         use_g1_as_base = True
         if criteria_idx == 0: # Ponto na Ponta -> Meio (Sincronismo)
