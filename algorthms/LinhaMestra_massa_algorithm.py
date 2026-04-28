@@ -239,6 +239,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                     best_dist = float('inf')
                     best_viz_id = None  # id_mae do vizinho (string)
 
+                    best_pt_int = None
                     candidates = feat_map['spatial_index'].intersects(ray_geom.boundingBox())
                     for c in candidates:
                         if c == f_ori.id():
@@ -259,6 +260,11 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                         if d < best_dist:
                             best_dist = d
                             best_viz_id = feat_map['id_mae_by_feature_id'].get(c, None)
+                            best_pt_int = pt_int
+
+                    # Cortar o raio no ponto de toque (se encontrou vizinho)
+                    if best_viz_id and best_pt_int is not None:
+                        ray_geom = QgsGeometry.fromPolylineXY([p, best_pt_int])
 
                     vizinho_str = best_viz_id if best_viz_id else ''
                     if best_viz_id:
@@ -576,7 +582,10 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 geom_ori = f_ori.geometry()
                 pts_amostra = VectorUtils.get_equidistant_points(geom_ori, particoes + 1)
 
-                viz_set_global = set()
+                # Coleta apenas 1 vizinho por lado (o do primeiro vértice do segmento)
+                # A fragmentação garante homogeneidade de vizinhança ao longo do segmento
+                viz_esquerdo = ''
+                viz_direito = ''
 
                 for i, p in enumerate(pts_amostra):
                     az_local = VectorUtils.get_vertex_azimuth(pts_amostra, i)
@@ -592,6 +601,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
 
                         best_dist = float('inf')
                         best_viz_id = ''
+                        best_pt_int = None
 
                         candidates = seg_spatial_index.intersects(ray_geom.boundingBox())
                         for c in candidates:
@@ -613,9 +623,18 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                             if d < best_dist:
                                 best_dist = d
                                 best_viz_id = seg_id_mae_map.get(c, '')
+                                best_pt_int = pt_int
 
-                        if best_viz_id:
-                            viz_set_global.add(best_viz_id)
+                        # Cortar o raio no ponto de toque (se encontrou vizinho)
+                        if best_viz_id and best_pt_int is not None:
+                            ray_geom = QgsGeometry.fromPolylineXY([p, best_pt_int])
+
+                        # Atribuir vizinho do primeiro vértice ao segmento
+                        if i == 0:
+                            if lado == 'esquerdo':
+                                viz_esquerdo = best_viz_id
+                            else:
+                                viz_direito = best_viz_id
 
                         sensor_attrs = [
                             id_mae_seg,
@@ -631,7 +650,13 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                         feat_s = VectorUtils.create_feature(ray_geom, fields_consulta, sensor_attrs)
                         sink_consulta_2.addFeature(feat_s, QgsFeatureSink.FastInsert)
 
-                vizinhos_por_segmento[id_mae_seg] = viz_set_global
+                # Segmento tem no máximo 2 vizinhos (1 por lado)
+                viz_set = set()
+                if viz_esquerdo:
+                    viz_set.add(viz_esquerdo)
+                if viz_direito:
+                    viz_set.add(viz_direito)
+                vizinhos_por_segmento[id_mae_seg] = viz_set
 
             # Escrever OUTPUT_SEGMENTOS com vizinhos corretos (S0, S1, ...)
             for seg in todos_segmentos:
