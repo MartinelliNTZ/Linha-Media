@@ -60,7 +60,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
 
         self.addParameter(QgsProcessingParameterNumber(
             self.PARTICOES, self.tr('Número de Partiçôes'),
-            type=QgsProcessingParameterNumber.Integer, defaultValue=1000))
+            type=QgsProcessingParameterNumber.Integer, defaultValue=50))
 
         self.addParameter(
             QgsProcessingParameterEnum(
@@ -613,24 +613,24 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
             # ----------------------------------------------------------
             feedback.pushInfo(self.tr('ETAPA 3: 2ª Consulta sobre segmentos fragmentados...'))
 
-            # Criar features a partir dos segmentos
+            # Construir features com IDs explícitos para QgsSpatialIndex
             seg_features = []
-            seg_id_mae_map = {}
-            seg_by_feature_id = {}
-            for seg in todos_segmentos:
-                f_seg = QgsFeature()
+            seg_id_mae_map = {}   # feature_id (explícito) -> id_seg string
+            seg_by_fid = {}       # feature_id -> QgsFeature
+            for idx, seg in enumerate(todos_segmentos):
+                fid = idx + 1  # ID explícito (1-based)
+                f_seg = QgsFeature(fid)
                 f_seg.setGeometry(seg['geom'])
-                f_seg.setAttributes([seg['id_seg']])
                 seg_features.append(f_seg)
-                seg_id_mae_map[f_seg.id()] = seg['id_seg']
-                seg_by_feature_id[f_seg.id()] = f_seg
+                seg_id_mae_map[fid] = seg['id_seg']
+                seg_by_fid[fid] = f_seg
 
-            # Construir spatial_index para segmentos
+            # Construir spatial_index (QGIS 3.16: precisa de IDs explícitos)
             seg_spatial_index = QgsSpatialIndex()
             for f in seg_features:
                 seg_spatial_index.addFeature(f)
 
-            # Varredura 2
+            # 2ª Varredura — mesmo padrão da ETAPA 1
             for f_ori in seg_features:
                 id_mae_seg = seg_id_mae_map.get(f_ori.id(), '?')
                 geom_ori = f_ori.geometry()
@@ -655,7 +655,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                         for c in candidates:
                             if c == f_ori.id():
                                 continue
-                            c_feat = seg_by_feature_id.get(c)
+                            c_feat = seg_by_fid.get(c)
                             if c_feat is None:
                                 continue
                             c_geom = c_feat.geometry()
