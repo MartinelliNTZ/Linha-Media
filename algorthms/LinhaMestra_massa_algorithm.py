@@ -475,8 +475,8 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
             fields_conexao.append(QgsField('grupo', QVariant.String))
         fields_conexao.append(QgsField('original_id', QVariant.String))
         fields_conexao.append(QgsField('id_conexao', QVariant.Int))
-        fields_conexao.append(QgsField('id_pai', QVariant.Double))
-        fields_conexao.append(QgsField('id_mae', QVariant.Double))
+        fields_conexao.append(QgsField('id_pai', QVariant.String))
+        fields_conexao.append(QgsField('id_mae', QVariant.String))
         fields_conexao.append(QgsField('id_origem', QVariant.Double))
 
         (sink_conexao, dest_id_conexao) = self.parameterAsSink(
@@ -631,10 +631,15 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 seg_spatial_index.addFeature(f)
 
             # 2ª Varredura — mesmo padrão da ETAPA 1
+            # Também coleta vizinhança entre segmentos para a ETAPA 4
+            vizinhos_por_segmento = {}  # id_seg -> set de id_seg vizinhos
+
             for f_ori in seg_features:
                 id_mae_seg = seg_id_mae_map.get(f_ori.id(), '?')
                 geom_ori = f_ori.geometry()
                 pts_amostra = VectorUtils.get_equidistant_points(geom_ori, particoes + 1)
+
+                viz_set_global = set()
 
                 for i, p in enumerate(pts_amostra):
                     az_local = VectorUtils.get_vertex_azimuth(pts_amostra, i)
@@ -672,6 +677,9 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                                 best_dist = d
                                 best_viz_id = seg_id_mae_map.get(c, '')
 
+                        if best_viz_id:
+                            viz_set_global.add(best_viz_id)
+
                         sensor_attrs = [
                             id_mae_seg,
                             id_vertice,
@@ -686,48 +694,42 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                         feat_s = VectorUtils.create_feature(ray_geom, fields_consulta, sensor_attrs)
                         sink_consulta_2.addFeature(feat_s, QgsFeatureSink.FastInsert)
 
+                vizinhos_por_segmento[id_mae_seg] = viz_set_global
+
             # ----------------------------------------------------------
             # ETAPA 4: PROCESSAMENTO DE PARES (Proximidade × Proximidade)
+            # Usa SEGMENTOS como unidades de casamento, com IDs string
             # ----------------------------------------------------------
             feedback.pushInfo(self.tr('ETAPA 4: Processando pares...'))
 
-            if order_field:
-                # Cenário A: com ID
-                group_features.sort(key=lambda f: f.attribute(order_field))
-                pares_para_processar = []
-                for i in range(len(group_features) - 1):
-                    pares_para_processar.append((group_features[i], group_features[i + 1]))
-            else:
-                # Cenário B: sem ID — formar pares a partir dos segmentos
-                pares_detectados = set()
-                pares_para_processar = []
-                for seg in todos_segmentos:
-                    for viz_id in seg['vizinhos_set']:
-                        par_key = tuple(sorted([seg['parent_id'], viz_id]))
-                        if par_key not in pares_detectados:
-                            pares_detectados.add(par_key)
-                            # Encontrar feature original do vizinho
-                            f_viz = None
-                            for f in group_features:
-                                if local_id_mae_map.get(f.id()) == viz_id:
-                                    f_viz = f
-                                    break
-                            if f_viz is None:
-                                continue
-                            f1_dummy = QgsFeature()
-                            f1_dummy.setGeometry(seg['geom'])
-                            f1_dummy.setAttributes([seg['parent_id']])
-                            pares_para_processar.append((f1_dummy, f_viz))
+            # Mapear id_seg -> geometria
+            seg_geom_map = {}
+            for seg in todos_segmentos:
+                seg_geom_map[seg['id_seg']] = seg['geom']
+
+            # Formar pares de segmentos vizinhos (cada par único processado uma vez)
+            pares_detectados = set()
+            pares_para_processar = []
+            for seg_id_a, viz_set in vizinhos_por_segmento.items():
+                for seg_id_b in viz_set:
+                    par_key = tuple(sorted([seg_id_a, seg_id_b]))
+                    if par_key not in pares_detectados:
+                        pares_detectados.add(par_key)
+                        geom_a = seg_geom_map.get(seg_id_a)
+                        geom_b = seg_geom_map.get(seg_id_b)
+                        if geom_a is None or geom_b is None:
+                            continue
+                        pares_para_processar.append((seg_id_a, geom_a, seg_id_b, geom_b))
 
             num_pares = len(pares_para_processar)
-            feedback.pushInfo(self.tr('Processando Grupo: {} ({} pares)'.format(group_val, num_pares)))
+            feedback.pushInfo(self.tr('Processando Grupo: {} ({} pares segmento-a-segmento)'.format(group_val, num_pares)))
 
-            for i, (f1, f2) in enumerate(pares_para_processar):
+            for i, (id_a, geom_a, id_b, geom_b) in enumerate(pares_para_processar):
                 if feedback.isCanceled():
                     break
 
                 par_id = i + 1
-                g1, g2 = VectorUtils.align_line_pair(f1.geometry(), f2.geometry())
+                g1, g2 = VectorUtils.align_line_pair(geom_a, geom_b)
 
                 v_count1 = sum(1 for _ in g1.vertices())
                 v_count2 = sum(1 for _ in g2.vertices())
@@ -752,7 +754,7 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                     perp_results = p_res
 
                 if needs_1to1:
-                    g_pai, g_mae = VectorUtils.align_by_endpoint_logic(f1.geometry(), f2.geometry())
+                    g_pai, g_mae = VectorUtils.align_by_endpoint_logic(geom_a, geom_b)
                     fixed_conns = VectorUtils.generate_1to1_connections(g_pai, g_mae, espacamento)
                     fixed_conns = VectorUtils.filter_connections(fixed_conns, g_pai, g_mae, source.sourceCrs(), reducao)
 
@@ -772,11 +774,8 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                 else:
                     conexao_par = interp_conns
 
-                # Origem ID
-                if not order_field:
-                    orig_id = f1.attributes()[0] if f1.attributes() else '?'
-                else:
-                    orig_id = local_id_mae_map.get(f1.id(), str(f1.id()))
+                # ID original = par "id_a | id_b"
+                orig_id = '{}|{}'.format(id_a, id_b)
 
                 # OUTPUT: Linhas Mestras
                 for res in mestra_final_par:
@@ -808,20 +807,20 @@ class LinhaMestraMassaAlgorithm(QgsProcessingAlgorithm):
                         feat_perp = VectorUtils.create_feature(perp_geom, fields_perp_proc, perp_attrs)
                         sink_perp_proc.addFeature(feat_perp, QgsFeatureSink.FastInsert)
 
-                # OUTPUT: Conexões
+                # OUTPUT: Conexões (sobrescreve id_pai/id_mae com IDs string)
                 for res_c in conexao_par:
                     attrs_c = [
                         str(group_val),
                         orig_id,
                         res_c.get('id', 0),
-                        res_c.get('id_pai', 0),
-                        res_c.get('id_mae', 0),
+                        id_a,
+                        id_b,
                         res_c.get('id_origem', 0)
                     ] if group_field else [
                         orig_id,
                         res_c.get('id', 0),
-                        res_c.get('id_pai', 0),
-                        res_c.get('id_mae', 0),
+                        id_a,
+                        id_b,
                         res_c.get('id_origem', 0)
                     ]
                     feat_c = VectorUtils.create_feature(res_c['geom'], fields_conexao, attrs_c)
