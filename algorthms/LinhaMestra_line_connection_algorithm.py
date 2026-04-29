@@ -5,8 +5,13 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterNumber,
                        QgsProcessingParameterFeatureSink,
-                       QgsFeatureSink)
-from qgis.PyQt.QtCore import QCoreApplication
+                       QgsFeatureSink,
+                       QgsFields,
+                       QgsField,
+                       QgsFeature,
+                       QgsGeometry)
+from qgis.PyQt.QtCore import QCoreApplication, QVariant
+from ..core.vector_utils import VectorUtils
 
 class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
@@ -74,12 +79,16 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
         spacing = self.parameterAsDouble(parameters, self.SPACING, context)
 
+        # Prepara os campos de saída adicionando a nova chave key_prim
+        output_fields = source.fields()
+        output_fields.append(QgsField('key_prim', QVariant.String))
+
         # Configuração básica do Sink (destino) para que o algoritmo seja executável
         (sink, dest_id) = self.parameterAsSink(
             parameters,
             self.OUTPUT,
             context,
-            source.fields(),
+            output_fields,
             source.wkbType(),
             source.sourceCrs()
         )
@@ -92,8 +101,22 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             if feedback.isCanceled():
                 break
             
-            # Por enquanto apenas repassa a feição original
-            sink.addFeature(feature, QgsFeatureSink.FastInsert)
+            # Coleta pontos ao longo da linha original com o espaçamento definido
+            points = VectorUtils.get_points_at_interval(feature.geometry(), spacing)
+            
+            # Cria a nova geometria padronizada. Se a linha for menor que o spacing, 
+            # usamos a geometria original ou garantimos que tenha ao menos 2 pontos.
+            new_geom = QgsGeometry.fromPolylineXY(points) if len(points) >= 2 else feature.geometry()
+
+            new_feat = QgsFeature(output_fields)
+            new_feat.setGeometry(new_geom)
+            
+            # Atribui atributos originais e gera a chave única key_prim (ex: O0, O1...)
+            attrs = feature.attributes()
+            attrs.append(f"O{current}")
+            new_feat.setAttributes(attrs)
+            
+            sink.addFeature(new_feat, QgsFeatureSink.FastInsert)
             
             # Atualiza o feedback de progresso
             feedback.setProgress(int(current * total))
