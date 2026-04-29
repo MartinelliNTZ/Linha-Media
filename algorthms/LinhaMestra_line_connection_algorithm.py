@@ -11,7 +11,7 @@ from qgis.PyQt.QtCore import QCoreApplication
 class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
     SENSOR_LIMIT = 'SENSOR_LIMIT'
-    PARTITIONS = 'PARTITIONS'
+    SPACING = 'SPACING'
     OUTPUT = 'OUTPUT'
 
     def tr(self, string):
@@ -55,10 +55,10 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
         self.addParameter(
             QgsProcessingParameterNumber(
-                self.PARTITIONS,
-                self.tr('Número de Partições'),
-                type=QgsProcessingParameterNumber.Integer,
-                defaultValue=50
+                self.SPACING,
+                self.tr('Espaçamento entre Partições'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=5.0
             )
         )
 
@@ -72,6 +72,30 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
-        partitions = self.parameterAsInt(parameters, self.PARTITIONS, context)
-   
-        return {None}
+        spacing = self.parameterAsDouble(parameters, self.SPACING, context)
+
+        # Configuração básica do Sink (destino) para que o algoritmo seja executável
+        (sink, dest_id) = self.parameterAsSink(
+            parameters,
+            self.OUTPUT,
+            context,
+            source.fields(),
+            source.wkbType(),
+            source.sourceCrs()
+        )
+
+        features = source.getFeatures()
+        feature_count = source.featureCount()
+        total = 100.0 / feature_count if feature_count > 0 else 0
+
+        for current, feature in enumerate(features):
+            if feedback.isCanceled():
+                break
+            
+            # Por enquanto apenas repassa a feição original
+            sink.addFeature(feature, QgsFeatureSink.FastInsert)
+            
+            # Atualiza o feedback de progresso
+            feedback.setProgress(int(current * total))
+
+        return {self.OUTPUT: dest_id}
