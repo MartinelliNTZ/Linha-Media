@@ -83,14 +83,14 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.PERP_OUTPUT,
-                self.tr('Sensores Perpendiculares')
+                self.tr('Sensores Primarios')
             )
         )
 
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.VERT_OUTPUT,
-                self.tr('Vértices com Keys')
+                self.tr('Vértices')
             )
         )
 
