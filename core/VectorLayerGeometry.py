@@ -80,6 +80,8 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
             
             for angle_offset in [90, -90]:
                 az_ray = (az_local + angle_offset) % 360
+                side = 'd' if angle_offset == 90 else 'e'
+                key_s1 = f"{key_vertex}{side}"
                 
                 # Reaproveita a lógica centralizada de corte por colisão
                 final_geom, _ = VectorLayerGeometry.get_trimmed_ray(
@@ -88,13 +90,13 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
 
                 perp_feat = QgsFeature(fields)
                 perp_feat.setGeometry(final_geom)
-                perp_feat.setAttributes([key_prim, key_vertex])
+                perp_feat.setAttributes([key_prim, key_vertex, key_s1])
                 sensor_features.append(perp_feat)
 
             # Cria a feição de ponto (Vértice) para o output de pontos
             vert_feat = QgsFeature(fields)
             vert_feat.setGeometry(QgsGeometry.fromPointXY(p_start))
-            vert_feat.setAttributes([key_prim, key_vertex])
+            vert_feat.setAttributes([key_prim, key_vertex, None])
             vertex_features.append(vert_feat)
 
         return sensor_features, vertex_features
