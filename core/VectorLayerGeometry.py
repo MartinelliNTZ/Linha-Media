@@ -67,13 +67,14 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
         return QgsGeometry.fromPolylineXY([p_start, final_p_end]), hit_id
 
     @staticmethod
-    def generate_perpendicular_sensors(points, key_prim, sensor_limit, spatial_index, feat_dict, feature_id, fields):
+    def generate_perpendicular_sensors(points, key_prim, sensor_limit, spatial_index, feat_dict, feature_id, fields, mother_geoms=None):
         """
         Gera feições de sensores perpendiculares para uma lista de pontos ao longo de uma linha.
         """
         sensor_features = []
+        vertex_features = []
         for i, p in enumerate(points):
-            key_vertex = f"{key_prim}_{i}"
+            key_vertex = f"{key_prim}_{i:04d}"
             p_start = QgsPointXY(p.x(), p.y())
             az_local = VectorUtils.get_vertex_azimuth(points, i)
             
@@ -82,14 +83,21 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
                 
                 # Reaproveita a lógica centralizada de corte por colisão
                 final_geom, _ = VectorLayerGeometry.get_trimmed_ray(
-                    p_start, az_ray, sensor_limit, spatial_index, feat_dict, feature_id
+                    p_start, az_ray, sensor_limit, spatial_index, feat_dict, feature_id, mother_geoms
                 )
 
                 perp_feat = QgsFeature(fields)
                 perp_feat.setGeometry(final_geom)
                 perp_feat.setAttributes([key_prim, key_vertex])
                 sensor_features.append(perp_feat)
-        return sensor_features
+
+            # Cria a feição de ponto (Vértice) para o output de pontos
+            vert_feat = QgsFeature(fields)
+            vert_feat.setGeometry(QgsGeometry.fromPointXY(p_start))
+            vert_feat.setAttributes([key_prim, key_vertex])
+            vertex_features.append(vert_feat)
+
+        return sensor_features, vertex_features
 
     @staticmethod
     def adjust_line_length(geometry, delta):
