@@ -155,6 +155,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         features = source.getFeatures()
         feature_count = source.featureCount()
         total = 100.0 / feature_count if feature_count > 0 else 0
+        global_sec_counter = 0
 
         for current, feature in enumerate(features):
             if feedback.isCanceled():
@@ -173,10 +174,13 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             sink.addFeature(new_feat, QgsFeatureSink.FastInsert)
 
             # 4. Geração de Sensores Perpendiculares usando Utils
-            sensors, vertices = VectorLayerGeometry.generate_perpendicular_sensors(
-                points, key_prim, sensor_limit, spatial_index, feat_dict, feature.id(), perp_fields, vert_fields, fid_to_key_prim=fid_to_key_prim
+            sensors, vertices, global_sec_counter = VectorLayerGeometry.generate_perpendicular_sensors(
+                points, key_prim, sensor_limit, spatial_index, feat_dict, feature.id(), perp_fields, vert_fields, fid_to_key_prim=fid_to_key_prim, start_sec_counter=global_sec_counter
             )
             
+            # Incrementa o contador para a próxima linha (key_prim) iniciar em um novo grupo
+            global_sec_counter += 1
+
             for s in sensors:
                 perp_sink.addFeature(s, QgsFeatureSink.FastInsert)
             

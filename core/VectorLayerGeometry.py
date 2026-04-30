@@ -67,14 +67,14 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
         return QgsGeometry.fromPolylineXY([p_start, final_p_end]), hit_id
 
     @staticmethod
-    def generate_perpendicular_sensors(points, key_prim, sensor_limit, spatial_index, feat_dict, feature_id, perp_fields, vert_fields, mother_geoms=None, fid_to_key_prim=None):
+    def generate_perpendicular_sensors(points, key_prim, sensor_limit, spatial_index, feat_dict, feature_id, perp_fields, vert_fields, mother_geoms=None, fid_to_key_prim=None, start_sec_counter=0):
         """
         Gera feições de sensores perpendiculares para uma lista de pontos ao longo de uma linha.
         """
         sensor_features = []
         vertex_features = []
         
-        sec_counter = 0
+        sec_counter = start_sec_counter
         prev_neighbors = (None, None)
 
         for i, p in enumerate(points):
@@ -122,7 +122,7 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
             vert_feat.setAttributes([key_prim, key_vertex, key_sec, vertex_neighbors['e'], vertex_neighbors['d']])
             vertex_features.append(vert_feat)
 
-        return sensor_features, vertex_features
+        return sensor_features, vertex_features, sec_counter
 
     @staticmethod
     def adjust_line_length(geometry, delta):
