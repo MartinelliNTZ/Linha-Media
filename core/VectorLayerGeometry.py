@@ -73,6 +73,10 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
         """
         sensor_features = []
         vertex_features = []
+        
+        sec_counter = 0
+        prev_neighbors = (None, None)
+
         for i, p in enumerate(points):
             key_vertex = f"{key_prim}_{i:04d}"
             p_start = QgsPointXY(p.x(), p.y())
@@ -102,10 +106,20 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
                 perp_feat.setAttributes([key_prim, key_vertex, key_s1, side, neighbor_key])
                 sensor_features.append(perp_feat)
 
+            # Lógica de agrupamento para keySec
+            current_neighbors = (vertex_neighbors['e'], vertex_neighbors['d'])
+            if i > 0:
+                # Se qualquer um dos vizinhos mudar em relação ao vértice anterior, incrementa o grupo
+                if current_neighbors != prev_neighbors:
+                    sec_counter += 1
+            
+            key_sec = f"S{sec_counter:04d}"
+            prev_neighbors = current_neighbors
+
             # Cria a feição de ponto (Vértice) para o output de pontos
             vert_feat = QgsFeature(vert_fields)
             vert_feat.setGeometry(QgsGeometry.fromPointXY(p_start))
-            vert_feat.setAttributes([key_prim, key_vertex, vertex_neighbors['e'], vertex_neighbors['d']])
+            vert_feat.setAttributes([key_prim, key_vertex, key_sec, vertex_neighbors['e'], vertex_neighbors['d']])
             vertex_features.append(vert_feat)
 
         return sensor_features, vertex_features

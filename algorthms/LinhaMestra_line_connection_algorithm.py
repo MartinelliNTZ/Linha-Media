@@ -69,7 +69,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 self.SPACING,
                 self.tr('Espaçamento entre Partições'),
                 type=QgsProcessingParameterNumber.Double,
-                defaultValue=5.0
+                defaultValue=25.0
             )
         )
 
@@ -113,6 +113,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         vert_fields = QgsFields()
         vert_fields.append(QgsField('key_prim', QVariant.String))
         vert_fields.append(QgsField('keyVertex', QVariant.String))
+        vert_fields.append(QgsField('keySec', QVariant.String))
         vert_fields.append(QgsField('neighborE', QVariant.String))
         vert_fields.append(QgsField('neighborD', QVariant.String))
 
