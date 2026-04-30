@@ -1,157 +1,389 @@
 # -*- coding: utf-8 -*-
 
 import math
-from qgis.core import QgsGeometry, QgsPointXY, QgsSpatialIndex, QgsFeature
-from .vector_utils import VectorUtils # Import VectorUtils for _get_closest_point
+from qgis.core import QgsFeature, QgsGeometry, QgsPointXY, QgsSpatialIndex
+from .vector_utils import VectorUtils
 
-class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clareza
+
+class VectorLayerGeometry:
     """Classe genérica para manipulação de geometrias de camadas vetoriais."""
 
     @staticmethod
-    def get_trimmed_ray(p_start, azimuth, max_length, spatial_index=None, feat_dict=None, exclude_id=-1, mother_geoms=None):
+    def create_spatial_context(features, key_attr_name):
+        """
+        Cria índice espacial e dicionários auxiliares para operações de vizinhança.
+
+        Args:
+            features (iterable[QgsFeature]): Feições que participarão das consultas.
+            key_attr_name (str): Nome do atributo que identifica a feição vizinha.
+
+        Returns:
+            tuple: (spatial_index, feat_dict, fid_to_key)
+        """
+        feature_list = list(features)
+        if not feature_list:
+            return QgsSpatialIndex(), {}, {}
+
+        if not key_attr_name:
+            raise ValueError("O parâmetro key_attr_name é obrigatório.")
+
+        field_names = feature_list[0].fields().names()
+        if key_attr_name not in field_names:
+            raise ValueError(
+                "O atributo '{0}' não existe nas feições informadas.".format(
+                    key_attr_name
+                )
+            )
+
+        spatial_index = QgsSpatialIndex()
+        for feature in feature_list:
+            spatial_index.addFeature(feature)
+        feat_dict = {feature.id(): feature for feature in feature_list}
+        fid_to_key = {feature.id(): feature[key_attr_name] for feature in feature_list}
+        return spatial_index, feat_dict, fid_to_key
+
+    @staticmethod
+    def standardize_line_feature(
+        feature, spacing, key_prim, temp_fields, key_attr_name="key_prim"
+    ):
+        """
+        Padroniza o espaçamento de uma linha e prepara sua representação intermediária.
+
+        Returns:
+            dict: geometria padronizada, pontos padronizados, atributos e feição temporária.
+        """
+        geometry = feature.geometry()
+        points = VectorLayerGeometry._sample_points_by_spacing(geometry, spacing)
+        standardized_geometry = (
+            QgsGeometry.fromPolylineXY(points) if len(points) >= 2 else geometry
+        )
+
+        temp_feature = QgsFeature(temp_fields)
+        temp_feature.setId(feature.id())
+        temp_feature.setGeometry(standardized_geometry)
+        temp_feature.setAttributes(feature.attributes() + [key_prim])
+
+        return {
+            "feature_id": feature.id(),
+            "key_prim": key_prim,
+            "original_attrs": feature.attributes(),
+            "geometry": standardized_geometry,
+            "points": points,
+            "feature": temp_feature,
+        }
+
+    @staticmethod
+    def generate_perpendicular_records(points, key_prim, sensor_limit):
+        """
+        Gera registros de sensores perpendiculares sem cortar por vizinhança.
+        """
+        sensor_records = []
+
+        for index, point in enumerate(points):
+            p_start = QgsPointXY(point.x(), point.y())
+            key_vertex = f"{key_prim}_{index:04d}"
+            az_local = VectorUtils.get_vertex_azimuth(points, index)
+
+            for angle_offset in [90, -90]:
+                azimuth = (az_local + angle_offset) % 360
+                side = "d" if angle_offset == 90 else "e"
+                key_s1 = f"{key_vertex}{side}"
+                sensor_records.append(
+                    {
+                        "key_prim": key_prim,
+                        "keyVertex": key_vertex,
+                        "keyS1": key_s1,
+                        "vertex_index": index,
+                        "side": side,
+                        "azimuth": azimuth,
+                        "start_point": p_start,
+                        "geometry": VectorLayerGeometry._build_ray_geometry(
+                            p_start, azimuth, sensor_limit
+                        ),
+                        "neighbor": None,
+                    }
+                )
+
+        return sensor_records
+
+    @staticmethod
+    def trim_perpendicular_records(
+        sensor_records,
+        sensor_limit,
+        spatial_index,
+        feat_dict,
+        origin_feature_id,
+        fid_to_key,
+        neighbor_key_attr_name,
+        mother_geoms=None,
+    ):
+        """
+        Corta os sensores pela feição vizinha mais próxima e identifica sua chave.
+        """
+        if not neighbor_key_attr_name:
+            raise ValueError("O nome do atributo de chave do vizinho é obrigatório.")
+
+        for record in sensor_records:
+            trimmed_geometry, hit_id = VectorLayerGeometry.get_trimmed_ray(
+                record["start_point"],
+                record["azimuth"],
+                sensor_limit,
+                spatial_index,
+                feat_dict,
+                origin_feature_id,
+                mother_geoms,
+            )
+            record["geometry"] = trimmed_geometry
+            record["neighbor"] = fid_to_key.get(hit_id) if hit_id != -1 else None
+
+        return sensor_records
+
+    @staticmethod
+    def populate_vertex_neighbors(points, key_prim, sensor_records):
+        """
+        Consolida os vizinhos detectados pelos sensores em registros de vértices.
+        """
+        sensor_map = {}
+        for record in sensor_records:
+            sensor_map[(record["vertex_index"], record["side"])] = record.get("neighbor")
+
+        vertex_records = []
+        for index, point in enumerate(points):
+            vertex_records.append(
+                {
+                    "key_prim": key_prim,
+                    "keyVertex": f"{key_prim}_{index:04d}",
+                    "point": QgsPointXY(point.x(), point.y()),
+                    "vertex_index": index,
+                    "neighborE": sensor_map.get((index, "e")),
+                    "neighborD": sensor_map.get((index, "d")),
+                    "keySec": None,
+                }
+            )
+
+        return vertex_records
+
+    @staticmethod
+    def assign_keysec(vertex_records, start_sec_counter=0):
+        """
+        Atribui keySec agrupando vértices com a mesma assinatura de vizinhança.
+
+        Returns:
+            int: próximo contador disponível após o último keySec utilizado.
+        """
+        if not vertex_records:
+            return start_sec_counter
+
+        current_counter = start_sec_counter
+        previous_signature = VectorLayerGeometry._vertex_signature(vertex_records[0])
+        vertex_records[0]["keySec"] = f"S{current_counter:04d}"
+
+        for vertex_record in vertex_records[1:]:
+            current_signature = VectorLayerGeometry._vertex_signature(vertex_record)
+            if current_signature != previous_signature:
+                current_counter += 1
+                previous_signature = current_signature
+            vertex_record["keySec"] = f"S{current_counter:04d}"
+
+        return current_counter + 1
+
+    @staticmethod
+    def partition_standardized_line(points, original_attrs, key_prim, vertex_records):
+        """
+        Particiona a linha padronizada por keySec e transfere neighborE/neighborD.
+        """
+        if len(points) < 2 or not vertex_records:
+            return []
+
+        segment_records = []
+        current_key_sec = vertex_records[0]["keySec"]
+        current_neighbor_e = vertex_records[0]["neighborE"]
+        current_neighbor_d = vertex_records[0]["neighborD"]
+        current_points = [QgsPointXY(points[0].x(), points[0].y())]
+
+        for index in range(1, len(points)):
+            point = QgsPointXY(points[index].x(), points[index].y())
+            vertex_record = vertex_records[index]
+
+            if vertex_record["keySec"] != current_key_sec:
+                if len(current_points) >= 2:
+                    segment_records.append(
+                        {
+                            "geometry": QgsGeometry.fromPolylineXY(current_points),
+                            "attributes": original_attrs
+                            + [
+                                key_prim,
+                                current_key_sec,
+                                current_neighbor_e,
+                                current_neighbor_d,
+                            ],
+                        }
+                    )
+
+                previous_point = QgsPointXY(points[index - 1].x(), points[index - 1].y())
+                current_points = [previous_point, point]
+                current_key_sec = vertex_record["keySec"]
+                current_neighbor_e = vertex_record["neighborE"]
+                current_neighbor_d = vertex_record["neighborD"]
+                continue
+
+            current_points.append(point)
+
+        if len(current_points) >= 2:
+            segment_records.append(
+                {
+                    "geometry": QgsGeometry.fromPolylineXY(current_points),
+                    "attributes": original_attrs
+                    + [
+                        key_prim,
+                        current_key_sec,
+                        current_neighbor_e,
+                        current_neighbor_d,
+                    ],
+                }
+            )
+
+        return segment_records
+
+    @staticmethod
+    def get_trimmed_ray(
+        p_start,
+        azimuth,
+        max_length,
+        spatial_index=None,
+        feat_dict=None,
+        exclude_id=-1,
+        mother_geoms=None,
+    ):
         """
         Gera uma geometria de raio a partir de um ponto, cortando-a se houver colisão.
-        Reutilizável por diversos algoritmos de sensores.
-        
-        Args:
-            p_start (QgsPointXY): Ponto de origem do raio.
-            azimuth (float): Azimute do raio em graus.
-            max_length (float): Comprimento máximo do raio.
-            spatial_index (QgsSpatialIndex, optional): Índice espacial para colisões com outras feições.
-            feat_dict (dict, optional): Dicionário de feições para acesso rápido pelo ID.
-            exclude_id (int, optional): ID de uma feição a ser ignorada na colisão (ex: a própria linha).
-            mother_geoms (list, optional): Lista de geometrias "mães" para colisão prioritária.
-            
+
         Returns:
             tuple: (QgsGeometry do raio cortado, ID da feição que causou a colisão ou -1)
         """
-        rad = math.radians(azimuth)
-        p_target = QgsPointXY(
-            p_start.x() + max_length * math.sin(rad),
-            p_start.y() + max_length * math.cos(rad)
-        )
-        
+        p_target = VectorLayerGeometry._project_point(p_start, azimuth, max_length)
         ray_geom = QgsGeometry.fromPolylineXY([p_start, p_target])
         min_dist = float(max_length)
         final_p_end = p_target
         hit_id = -1
 
-        # 1. Intersecção com Linhas Mães (se houver)
         if mother_geoms:
-            for m_geom in mother_geoms:
-                if m_geom and not m_geom.isEmpty():
-                    inter = ray_geom.intersection(m_geom)
-                    if not inter.isEmpty():
-                        pt = VectorUtils._get_closest_point(inter, p_start)
-                        if pt:
-                            d = p_start.distance(pt)
-                            if d < min_dist:
-                                min_dist = d
-                                final_p_end = pt
+            for mother_geometry in mother_geoms:
+                if mother_geometry and not mother_geometry.isEmpty():
+                    intersection = ray_geom.intersection(mother_geometry)
+                    if not intersection.isEmpty():
+                        point = VectorUtils._get_closest_point(intersection, p_start)
+                        if point:
+                            distance = p_start.distance(point)
+                            if distance < min_dist:
+                                min_dist = distance
+                                final_p_end = point
 
-        # 2. Intersecção com outras curvas via Spatial Index
         if spatial_index and feat_dict:
             candidates = spatial_index.intersects(ray_geom.boundingBox())
-            for c_id in candidates:
-                if c_id == exclude_id: continue
-                inter = ray_geom.intersection(feat_dict[c_id].geometry())
-                if not inter.isEmpty():
-                    pt = VectorUtils._get_closest_point(inter, p_start)
-                    if pt:
-                        d = p_start.distance(pt)
-                        if 0.001 < d < min_dist: # Margem para evitar auto-colisão em junções
-                            min_dist = d
-                            final_p_end = pt
-                            hit_id = c_id
-        
+            for candidate_id in candidates:
+                if candidate_id == exclude_id:
+                    continue
+
+                intersection = ray_geom.intersection(feat_dict[candidate_id].geometry())
+                if not intersection.isEmpty():
+                    point = VectorUtils._get_closest_point(intersection, p_start)
+                    if point:
+                        distance = p_start.distance(point)
+                        if 0.001 < distance < min_dist:
+                            min_dist = distance
+                            final_p_end = point
+                            hit_id = candidate_id
+
         return QgsGeometry.fromPolylineXY([p_start, final_p_end]), hit_id
 
     @staticmethod
-    def generate_perpendicular_sensors(points, key_prim, sensor_limit, spatial_index, feat_dict, feature_id, perp_fields, vert_fields, output_fields, original_attrs, mother_geoms=None, fid_to_key_prim=None, start_sec_counter=0):
+    def generate_perpendicular_sensors(
+        points,
+        key_prim,
+        sensor_limit,
+        spatial_index,
+        feat_dict,
+        feature_id,
+        perp_fields,
+        vert_fields,
+        output_fields,
+        original_attrs,
+        mother_geoms=None,
+        fid_to_key_prim=None,
+        start_sec_counter=0,
+    ):
         """
-        Gera feições de sensores perpendiculares para uma lista de pontos ao longo de uma linha.
+        Wrapper de compatibilidade baseado no fluxo particionado.
         """
+        sensor_records = VectorLayerGeometry.generate_perpendicular_records(
+            points, key_prim, sensor_limit
+        )
+        sensor_records = VectorLayerGeometry.trim_perpendicular_records(
+            sensor_records,
+            sensor_limit,
+            spatial_index,
+            feat_dict,
+            feature_id,
+            fid_to_key_prim or {},
+            "key_prim",
+            mother_geoms=mother_geoms,
+        )
+        vertex_records = VectorLayerGeometry.populate_vertex_neighbors(
+            points, key_prim, sensor_records
+        )
+        next_sec_counter = VectorLayerGeometry.assign_keysec(
+            vertex_records, start_sec_counter
+        )
+        segment_records = VectorLayerGeometry.partition_standardized_line(
+            points, original_attrs, key_prim, vertex_records
+        )
+
         sensor_features = []
+        for record in sensor_records:
+            feature = QgsFeature(perp_fields)
+            feature.setGeometry(record["geometry"])
+            feature.setAttributes(
+                [
+                    record["key_prim"],
+                    record["keyVertex"],
+                    record["keyS1"],
+                    record["side"],
+                    record["neighbor"],
+                ]
+            )
+            sensor_features.append(feature)
+
         vertex_features = []
+        for record in vertex_records:
+            feature = QgsFeature(vert_fields)
+            feature.setGeometry(QgsGeometry.fromPointXY(record["point"]))
+            feature.setAttributes(
+                [
+                    record["key_prim"],
+                    record["keyVertex"],
+                    record["keySec"],
+                    record["neighborE"],
+                    record["neighborD"],
+                ]
+            )
+            vertex_features.append(feature)
+
         partitioned_line_features = []
-        
-        current_segment_points = []
-        sec_counter = start_sec_counter
-        prev_neighbors = (None, None)
+        for record in segment_records:
+            feature = QgsFeature(output_fields)
+            feature.setGeometry(record["geometry"])
+            feature.setAttributes(record["attributes"])
+            partitioned_line_features.append(feature)
 
-        for i, p in enumerate(points):
-            key_vertex = f"{key_prim}_{i:04d}"
-            p_start = QgsPointXY(p.x(), p.y())
-            az_local = VectorUtils.get_vertex_azimuth(points, i)
-            
-            # Armazenamento temporário para os vizinhos detectados em cada lado
-            vertex_neighbors = {'d': None, 'e': None}
-            
-            for angle_offset in [90, -90]:
-                az_ray = (az_local + angle_offset) % 360
-                side = 'd' if angle_offset == 90 else 'e'
-                key_s1 = f"{key_vertex}{side}"
-                
-                # Reaproveita a lógica centralizada de corte por colisão
-                final_geom, hit_id = VectorLayerGeometry.get_trimmed_ray(
-                    p_start, az_ray, sensor_limit, spatial_index, feat_dict, feature_id, mother_geoms
-                )
-
-                neighbor_key = None
-                if hit_id != -1 and fid_to_key_prim:
-                    neighbor_key = fid_to_key_prim.get(hit_id)
-                
-                vertex_neighbors[side] = neighbor_key
-
-                perp_feat = QgsFeature(perp_fields)
-                perp_feat.setGeometry(final_geom)
-                perp_feat.setAttributes([key_prim, key_vertex, key_s1, side, neighbor_key])
-                sensor_features.append(perp_feat)
-
-            # Lógica de agrupamento para keySec
-            current_neighbors = (vertex_neighbors['e'], vertex_neighbors['d'])
-            if i > 0:
-                if current_neighbors != prev_neighbors:
-                    # Fecha o segmento anterior e cria a feição de linha particionada
-                    if len(current_segment_points) >= 2:
-                        line_feat = QgsFeature(output_fields)
-                        line_feat.setGeometry(QgsGeometry.fromPolylineXY(current_segment_points))
-                        # Atributos: originais + key_prim + keySec + vizinhos
-                        line_feat.setAttributes(original_attrs + [key_prim, f"S{sec_counter:04d}", prev_neighbors[0], prev_neighbors[1]])
-                        partitioned_line_features.append(line_feat)
-                    
-                    # Inicia novo segmento com o último ponto do grupo anterior para garantir continuidade
-                    current_segment_points = [points[i-1], p_start]
-                    sec_counter += 1
-                else:
-                    current_segment_points.append(p_start)
-            else:
-                current_segment_points.append(p_start)
-            
-            key_sec = f"S{sec_counter:04d}"
-            prev_neighbors = current_neighbors
-
-            # Cria a feição de ponto (Vértice) para o output de pontos
-            vert_feat = QgsFeature(vert_fields)
-            vert_feat.setGeometry(QgsGeometry.fromPointXY(p_start))
-            vert_feat.setAttributes([key_prim, key_vertex, key_sec, vertex_neighbors['e'], vertex_neighbors['d']])
-            vertex_features.append(vert_feat)
-
-        # Fecha o último segmento da linha após o loop
-        if len(current_segment_points) >= 2:
-            line_feat = QgsFeature(output_fields)
-            line_feat.setGeometry(QgsGeometry.fromPolylineXY(current_segment_points))
-            line_feat.setAttributes(original_attrs + [key_prim, f"S{sec_counter:04d}", current_neighbors[0], current_neighbors[1]])
-            partitioned_line_features.append(line_feat)
-
-        return sensor_features, vertex_features, partitioned_line_features, sec_counter
+        return sensor_features, vertex_features, partitioned_line_features, next_sec_counter - 1
 
     @staticmethod
     def adjust_line_length(geometry, delta):
         """
         Estende ou reduz uma linha em ambas as extremidades.
-        delta > 0: Estende a linha para fora.
-        delta < 0: Reduz a linha para dentro (trim).
+        delta > 0: estende a linha para fora.
+        delta < 0: reduz a linha para dentro.
         """
         if geometry.isEmpty():
             return geometry
@@ -164,36 +396,86 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
             if len(polyline) < 2:
                 new_parts.append(polyline)
                 continue
-            
+
             new_poly = list(polyline)
-            
-            # Ajuste do Início (Vértice 0)
-            # Vetor do segundo para o primeiro ponto para definir a direção de saída
+
             p0 = polyline[0]
             p1 = polyline[1]
             dx0 = p0.x() - p1.x()
             dy0 = p0.y() - p1.y()
-            dist0 = math.sqrt(dx0**2 + dy0**2)
-            
+            dist0 = math.sqrt(dx0 ** 2 + dy0 ** 2)
+
             if dist0 > 0:
-                new_poly[0] = QgsPointXY(p0.x() + (dx0/dist0) * delta, 
-                                         p0.y() + (dy0/dist0) * delta)
-            
-            # Ajuste do Fim (Vértice n)
-            # Vetor do penúltimo para o último ponto para definir a direção de saída
+                new_poly[0] = QgsPointXY(
+                    p0.x() + (dx0 / dist0) * delta,
+                    p0.y() + (dy0 / dist0) * delta,
+                )
+
             pn = polyline[-1]
             pn_1 = polyline[-2]
             dxn = pn.x() - pn_1.x()
             dyn = pn.y() - pn_1.y()
-            distn = math.sqrt(dxn**2 + dyn**2)
-            
+            distn = math.sqrt(dxn ** 2 + dyn ** 2)
+
             if distn > 0:
-                new_poly[-1] = QgsPointXY(pn.x() + (dxn/distn) * delta, 
-                                          pn.y() + (dyn/distn) * delta)
-            
+                new_poly[-1] = QgsPointXY(
+                    pn.x() + (dxn / distn) * delta,
+                    pn.y() + (dyn / distn) * delta,
+                )
+
             new_parts.append(new_poly)
 
         if is_multi:
             return QgsGeometry.fromMultiPolylineXY(new_parts)
-        else:
-            return QgsGeometry.fromPolylineXY(new_parts[0])
+        return QgsGeometry.fromPolylineXY(new_parts[0])
+
+    @staticmethod
+    def _sample_points_by_spacing(geometry, spacing):
+        if geometry.isEmpty():
+            return []
+
+        if spacing <= 0:
+            return [QgsPointXY(vertex.x(), vertex.y()) for vertex in geometry.vertices()]
+
+        length = geometry.length()
+        if length == 0:
+            return [QgsPointXY(vertex.x(), vertex.y()) for vertex in geometry.vertices()]
+
+        distances = []
+        current_distance = 0.0
+        while current_distance < length:
+            distances.append(current_distance)
+            current_distance += spacing
+
+        if not distances or abs(distances[-1] - length) > 1e-9:
+            distances.append(length)
+
+        points = []
+        for distance in distances:
+            interpolated_geometry = geometry.interpolate(distance)
+            if interpolated_geometry and not interpolated_geometry.isEmpty():
+                point = interpolated_geometry.asPoint()
+                points.append(QgsPointXY(point.x(), point.y()))
+
+        if len(points) == 1:
+            end_point = geometry.interpolate(length).asPoint()
+            points.append(QgsPointXY(end_point.x(), end_point.y()))
+
+        return points
+
+    @staticmethod
+    def _project_point(start_point, azimuth, distance):
+        radians = math.radians(azimuth)
+        return QgsPointXY(
+            start_point.x() + distance * math.sin(radians),
+            start_point.y() + distance * math.cos(radians),
+        )
+
+    @staticmethod
+    def _build_ray_geometry(start_point, azimuth, distance):
+        end_point = VectorLayerGeometry._project_point(start_point, azimuth, distance)
+        return QgsGeometry.fromPolylineXY([start_point, end_point])
+
+    @staticmethod
+    def _vertex_signature(vertex_record):
+        return vertex_record.get("neighborE"), vertex_record.get("neighborD")
