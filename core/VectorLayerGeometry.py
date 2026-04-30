@@ -67,13 +67,15 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
         return QgsGeometry.fromPolylineXY([p_start, final_p_end]), hit_id
 
     @staticmethod
-    def generate_perpendicular_sensors(points, key_prim, sensor_limit, spatial_index, feat_dict, feature_id, perp_fields, vert_fields, mother_geoms=None, fid_to_key_prim=None, start_sec_counter=0):
+    def generate_perpendicular_sensors(points, key_prim, sensor_limit, spatial_index, feat_dict, feature_id, perp_fields, vert_fields, output_fields, original_attrs, mother_geoms=None, fid_to_key_prim=None, start_sec_counter=0):
         """
         Gera feições de sensores perpendiculares para uma lista de pontos ao longo de uma linha.
         """
         sensor_features = []
         vertex_features = []
+        partitioned_line_features = []
         
+        current_segment_points = []
         sec_counter = start_sec_counter
         prev_neighbors = (None, None)
 
@@ -109,9 +111,22 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
             # Lógica de agrupamento para keySec
             current_neighbors = (vertex_neighbors['e'], vertex_neighbors['d'])
             if i > 0:
-                # Se qualquer um dos vizinhos mudar em relação ao vértice anterior, incrementa o grupo
                 if current_neighbors != prev_neighbors:
+                    # Fecha o segmento anterior e cria a feição de linha particionada
+                    if len(current_segment_points) >= 2:
+                        line_feat = QgsFeature(output_fields)
+                        line_feat.setGeometry(QgsGeometry.fromPolylineXY(current_segment_points))
+                        # Atributos: originais + key_prim + keySec + vizinhos
+                        line_feat.setAttributes(original_attrs + [key_prim, f"S{sec_counter:04d}", prev_neighbors[0], prev_neighbors[1]])
+                        partitioned_line_features.append(line_feat)
+                    
+                    # Inicia novo segmento com o último ponto do grupo anterior para garantir continuidade
+                    current_segment_points = [points[i-1], p_start]
                     sec_counter += 1
+                else:
+                    current_segment_points.append(p_start)
+            else:
+                current_segment_points.append(p_start)
             
             key_sec = f"S{sec_counter:04d}"
             prev_neighbors = current_neighbors
@@ -122,7 +137,14 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
             vert_feat.setAttributes([key_prim, key_vertex, key_sec, vertex_neighbors['e'], vertex_neighbors['d']])
             vertex_features.append(vert_feat)
 
-        return sensor_features, vertex_features, sec_counter
+        # Fecha o último segmento da linha após o loop
+        if len(current_segment_points) >= 2:
+            line_feat = QgsFeature(output_fields)
+            line_feat.setGeometry(QgsGeometry.fromPolylineXY(current_segment_points))
+            line_feat.setAttributes(original_attrs + [key_prim, f"S{sec_counter:04d}", current_neighbors[0], current_neighbors[1]])
+            partitioned_line_features.append(line_feat)
+
+        return sensor_features, vertex_features, partitioned_line_features, sec_counter
 
     @staticmethod
     def adjust_line_length(geometry, delta):

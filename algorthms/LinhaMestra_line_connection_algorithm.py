@@ -102,6 +102,9 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         # 1. Preparação dos campos
         output_fields = source.fields()
         output_fields.append(QgsField('key_prim', QVariant.String))
+        output_fields.append(QgsField('keySec', QVariant.String))
+        output_fields.append(QgsField('neighborE', QVariant.String))
+        output_fields.append(QgsField('neighborD', QVariant.String))
 
         perp_fields = QgsFields()
         perp_fields.append(QgsField('key_prim', QVariant.String))
@@ -165,17 +168,11 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             new_geom = QgsGeometry.fromPolylineXY(points) if len(points) >= 2 else feature.geometry()
             key_prim = f"O{current:04d}"
 
-            new_feat = QgsFeature(output_fields)
-            new_feat.setGeometry(new_geom)
-            
-            attrs = feature.attributes()
-            attrs.append(key_prim)
-            new_feat.setAttributes(attrs)
-            sink.addFeature(new_feat, QgsFeatureSink.FastInsert)
-
-            # 4. Geração de Sensores Perpendiculares usando Utils
-            sensors, vertices, global_sec_counter = VectorLayerGeometry.generate_perpendicular_sensors(
-                points, key_prim, sensor_limit, spatial_index, feat_dict, feature.id(), perp_fields, vert_fields, fid_to_key_prim=fid_to_key_prim, start_sec_counter=global_sec_counter
+            # 4. Geração de Sensores, Vértices e Particionamento da Linha Padronizada
+            sensors, vertices, partitioned_lines, global_sec_counter = VectorLayerGeometry.generate_perpendicular_sensors(
+                points, key_prim, sensor_limit, spatial_index, feat_dict, feature.id(), 
+                perp_fields, vert_fields, output_fields, feature.attributes(),
+                fid_to_key_prim=fid_to_key_prim, start_sec_counter=global_sec_counter
             )
             
             # Incrementa o contador para a próxima linha (key_prim) iniciar em um novo grupo
@@ -183,6 +180,9 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
             for s in sensors:
                 perp_sink.addFeature(s, QgsFeatureSink.FastInsert)
+            
+            for line_seg in partitioned_lines:
+                sink.addFeature(line_seg, QgsFeatureSink.FastInsert)
             
             for v in vertices:
                 vert_sink.addFeature(v, QgsFeatureSink.FastInsert)
