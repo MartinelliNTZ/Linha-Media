@@ -67,7 +67,7 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
         return QgsGeometry.fromPolylineXY([p_start, final_p_end]), hit_id
 
     @staticmethod
-    def generate_perpendicular_sensors(points, key_prim, sensor_limit, spatial_index, feat_dict, feature_id, fields, mother_geoms=None, fid_to_key_prim=None):
+    def generate_perpendicular_sensors(points, key_prim, sensor_limit, spatial_index, feat_dict, feature_id, perp_fields, vert_fields, mother_geoms=None, fid_to_key_prim=None):
         """
         Gera feições de sensores perpendiculares para uma lista de pontos ao longo de uma linha.
         """
@@ -77,6 +77,9 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
             key_vertex = f"{key_prim}_{i:04d}"
             p_start = QgsPointXY(p.x(), p.y())
             az_local = VectorUtils.get_vertex_azimuth(points, i)
+            
+            # Armazenamento temporário para os vizinhos detectados em cada lado
+            vertex_neighbors = {'d': None, 'e': None}
             
             for angle_offset in [90, -90]:
                 az_ray = (az_local + angle_offset) % 360
@@ -91,16 +94,18 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
                 neighbor_key = None
                 if hit_id != -1 and fid_to_key_prim:
                     neighbor_key = fid_to_key_prim.get(hit_id)
+                
+                vertex_neighbors[side] = neighbor_key
 
-                perp_feat = QgsFeature(fields)
+                perp_feat = QgsFeature(perp_fields)
                 perp_feat.setGeometry(final_geom)
                 perp_feat.setAttributes([key_prim, key_vertex, key_s1, side, neighbor_key])
                 sensor_features.append(perp_feat)
 
             # Cria a feição de ponto (Vértice) para o output de pontos
-            vert_feat = QgsFeature(fields)
+            vert_feat = QgsFeature(vert_fields)
             vert_feat.setGeometry(QgsGeometry.fromPointXY(p_start))
-            vert_feat.setAttributes([key_prim, key_vertex, None, None, None])
+            vert_feat.setAttributes([key_prim, key_vertex, vertex_neighbors['e'], vertex_neighbors['d']])
             vertex_features.append(vert_feat)
 
         return sensor_features, vertex_features

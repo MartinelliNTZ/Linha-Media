@@ -110,6 +110,12 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         perp_fields.append(QgsField('side', QVariant.String))
         perp_fields.append(QgsField('neighbor', QVariant.String))
 
+        vert_fields = QgsFields()
+        vert_fields.append(QgsField('key_prim', QVariant.String))
+        vert_fields.append(QgsField('keyVertex', QVariant.String))
+        vert_fields.append(QgsField('neighborE', QVariant.String))
+        vert_fields.append(QgsField('neighborD', QVariant.String))
+
         # 2. Configuração dos Sinks
         (sink, dest_id) = self.parameterAsSink(
             parameters,
@@ -133,7 +139,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             parameters,
             self.VERT_OUTPUT,
             context,
-            perp_fields,
+            vert_fields,
             QgsWkbTypes.Point,
             source.sourceCrs()
         )
@@ -167,7 +173,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
             # 4. Geração de Sensores Perpendiculares usando Utils
             sensors, vertices = VectorLayerGeometry.generate_perpendicular_sensors(
-                points, key_prim, sensor_limit, spatial_index, feat_dict, feature.id(), perp_fields, fid_to_key_prim=fid_to_key_prim
+                points, key_prim, sensor_limit, spatial_index, feat_dict, feature.id(), perp_fields, vert_fields, fid_to_key_prim=fid_to_key_prim
             )
             
             for s in sensors:
