@@ -22,6 +22,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     INPUT = "INPUT"
     SENSOR_LIMIT = "SENSOR_LIMIT"
     SPACING = "SPACING"
+    MIN_SEGMENT = "MIN_SEGMENT"
     OUTPUT = "OUTPUT"
     PERP_OUTPUT = "PERP_OUTPUT"
     VERT_OUTPUT = "VERT_OUTPUT"
@@ -77,6 +78,16 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         )
 
         self.addParameter(
+            QgsProcessingParameterNumber(
+                self.MIN_SEGMENT,
+                self.tr("Mínimo de vértices por grupo"),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=3,
+                minValue=1,
+            )
+        )
+
+        self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT, self.tr("Camada Padronizada (Spacing)")
             )
@@ -96,6 +107,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
         spacing = self.parameterAsDouble(parameters, self.SPACING, context)
+        min_segment = self.parameterAsInt(parameters, self.MIN_SEGMENT, context)
 
         if source is None:
             raise QgsProcessingException(self.tr("Camada de entrada inválida."))
@@ -195,6 +207,9 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             )
             global_sec_counter = VectorLayerGeometry.assign_keysec(
                 vertex_records, global_sec_counter
+            )
+            VectorLayerGeometry.enforce_minimum_group_size(
+                vertex_records, min_segment
             )
             segment_records = VectorLayerGeometry.partition_standardized_line(
                 points,

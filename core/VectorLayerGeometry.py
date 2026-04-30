@@ -188,6 +188,50 @@ class VectorLayerGeometry:
         return current_counter + 1
 
     @staticmethod
+    def enforce_minimum_group_size(vertex_records, minimum_size):
+        """
+        Reatribui keySec de grupos pequenos para o grupo anterior válido.
+        Se o primeiro grupo for pequeno e não houver anterior, usa o próximo grupo.
+        """
+        if minimum_size <= 1 or not vertex_records:
+            return vertex_records
+
+        groups = VectorLayerGeometry._group_vertex_records_by_keysec(vertex_records)
+        if len(groups) <= 1:
+            return vertex_records
+
+        for index, group in enumerate(groups):
+            if len(group["records"]) >= minimum_size:
+                continue
+
+            target_key_sec = None
+
+            for previous_index in range(index - 1, -1, -1):
+                if len(groups[previous_index]["records"]) >= minimum_size:
+                    target_key_sec = groups[previous_index]["keySec"]
+                    break
+
+            if target_key_sec is None:
+                for next_index in range(index + 1, len(groups)):
+                    if len(groups[next_index]["records"]) >= minimum_size:
+                        target_key_sec = groups[next_index]["keySec"]
+                        break
+
+            if target_key_sec is None:
+                if index > 0:
+                    target_key_sec = groups[index - 1]["keySec"]
+                elif index + 1 < len(groups):
+                    target_key_sec = groups[index + 1]["keySec"]
+
+            if target_key_sec is None:
+                continue
+
+            for record in group["records"]:
+                record["keySec"] = target_key_sec
+
+        return vertex_records
+
+    @staticmethod
     def partition_standardized_line(points, original_attrs, key_prim, vertex_records):
         """
         Particiona a linha padronizada por keySec e transfere neighborE/neighborD.
@@ -479,3 +523,18 @@ class VectorLayerGeometry:
     @staticmethod
     def _vertex_signature(vertex_record):
         return vertex_record.get("neighborE"), vertex_record.get("neighborD")
+
+    @staticmethod
+    def _group_vertex_records_by_keysec(vertex_records):
+        groups = []
+        current_group = None
+
+        for record in vertex_records:
+            key_sec = record.get("keySec")
+            if current_group is None or current_group["keySec"] != key_sec:
+                current_group = {"keySec": key_sec, "records": [record]}
+                groups.append(current_group)
+                continue
+            current_group["records"].append(record)
+
+        return groups
