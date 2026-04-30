@@ -108,6 +108,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         perp_fields.append(QgsField('keyVertex', QVariant.String))
         perp_fields.append(QgsField('keyS1', QVariant.String))
         perp_fields.append(QgsField('side', QVariant.String))
+        perp_fields.append(QgsField('neighbor', QVariant.String))
 
         # 2. Configuração dos Sinks
         (sink, dest_id) = self.parameterAsSink(
@@ -140,6 +141,9 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         # 3. Preparação para colisões
         spatial_index = QgsSpatialIndex(source.getFeatures())
         feat_dict = {f.id(): f for f in source.getFeatures()}
+        
+        # Mapeamento de FID para key_prim para identificar vizinhos na colisão
+        fid_to_key_prim = {f.id(): f"O{i:04d}" for i, f in enumerate(source.getFeatures())}
 
         features = source.getFeatures()
         feature_count = source.featureCount()
@@ -163,7 +167,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
             # 4. Geração de Sensores Perpendiculares usando Utils
             sensors, vertices = VectorLayerGeometry.generate_perpendicular_sensors(
-                points, key_prim, sensor_limit, spatial_index, feat_dict, feature.id(), perp_fields
+                points, key_prim, sensor_limit, spatial_index, feat_dict, feature.id(), perp_fields, fid_to_key_prim=fid_to_key_prim
             )
             
             for s in sensors:
