@@ -2,7 +2,7 @@
 
 import math
 from qgis.core import QgsGeometry, QgsPointXY, QgsSpatialIndex, QgsFeature
-from ..core.vector_utils import VectorUtils # Import VectorUtils for _get_closest_point
+from .vector_utils import VectorUtils # Import VectorUtils for _get_closest_point
 
 class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clareza
     """Classe genérica para manipulação de geometrias de camadas vetoriais."""

@@ -718,7 +718,7 @@ class VectorUtils:
         Filtra conexões que cruzam as linhas mãe.
         Reduz delta_m em cada ponta para evitar falsos positivos nos vértices de contato.
         """
-        from .geometry_utils import VectorLayerGeometry
+        from .VectorLayerGeometry import VectorLayerGeometry
         
         # Converte metros para graus se o CRS for geográfico
         if crs.isGeographic():

@@ -15,7 +15,7 @@ from qgis.core import (QgsProcessing,
                        QgsSpatialIndex)
 from qgis.PyQt.QtCore import QCoreApplication, QVariant
 from ..core.vector_utils import VectorUtils
-from ..core.geometry_utils import VectorLayerGeometry # Importa a nova classe GeometryUtils
+from ..core.VectorLayerGeometry import VectorLayerGeometry # Importa a nova classe GeometryUtils
 
 class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
