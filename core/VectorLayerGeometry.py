@@ -90,13 +90,13 @@ class VectorLayerGeometry: # Renomeado de VectorLayerGeometry para melhor clarez
 
                 perp_feat = QgsFeature(fields)
                 perp_feat.setGeometry(final_geom)
-                perp_feat.setAttributes([key_prim, key_vertex, key_s1])
+                perp_feat.setAttributes([key_prim, key_vertex, key_s1, side])
                 sensor_features.append(perp_feat)
 
             # Cria a feição de ponto (Vértice) para o output de pontos
             vert_feat = QgsFeature(fields)
             vert_feat.setGeometry(QgsGeometry.fromPointXY(p_start))
-            vert_feat.setAttributes([key_prim, key_vertex, None])
+            vert_feat.setAttributes([key_prim, key_vertex, None, None])
             vertex_features.append(vert_feat)
 
         return sensor_features, vertex_features

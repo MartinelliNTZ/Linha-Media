@@ -107,6 +107,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         perp_fields.append(QgsField('key_prim', QVariant.String))
         perp_fields.append(QgsField('keyVertex', QVariant.String))
         perp_fields.append(QgsField('keyS1', QVariant.String))
+        perp_fields.append(QgsField('side', QVariant.String))
 
         # 2. Configuração dos Sinks
         (sink, dest_id) = self.parameterAsSink(
