@@ -9,15 +9,20 @@ from qgis.core import (QgsProcessing,
                        QgsFields,
                        QgsField,
                        QgsFeature,
-                       QgsGeometry)
+                       QgsGeometry,
+                       QgsPointXY,
+                       QgsWkbTypes,
+                       QgsSpatialIndex)
 from qgis.PyQt.QtCore import QCoreApplication, QVariant
 from ..core.vector_utils import VectorUtils
+from ..core.geometry_utils import VectorLayerGeometry # Importa a nova classe GeometryUtils
 
 class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
     SENSOR_LIMIT = 'SENSOR_LIMIT'
     SPACING = 'SPACING'
     OUTPUT = 'OUTPUT'
+    PERP_OUTPUT = 'PERP_OUTPUT'
 
     def tr(self, string):
         return QCoreApplication.translate('Processing', string)
@@ -70,7 +75,14 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT,
-                self.tr('Camada Conectada')
+                self.tr('Camada Padronizada (Spacing)')
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.PERP_OUTPUT,
+                self.tr('Sensores Perpendiculares')
             )
         )
 
@@ -79,11 +91,15 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
         spacing = self.parameterAsDouble(parameters, self.SPACING, context)
 
-        # Prepara os campos de saída adicionando a nova chave key_prim
+        # 1. Preparação dos campos
         output_fields = source.fields()
         output_fields.append(QgsField('key_prim', QVariant.String))
 
-        # Configuração básica do Sink (destino) para que o algoritmo seja executável
+        perp_fields = QgsFields()
+        perp_fields.append(QgsField('key_prim', QVariant.String))
+        perp_fields.append(QgsField('keyVertex', QVariant.String))
+
+        # 2. Configuração dos Sinks
         (sink, dest_id) = self.parameterAsSink(
             parameters,
             self.OUTPUT,
@@ -93,6 +109,19 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             source.sourceCrs()
         )
 
+        (perp_sink, perp_dest_id) = self.parameterAsSink(
+            parameters,
+            self.PERP_OUTPUT,
+            context,
+            perp_fields,
+            QgsWkbTypes.LineString,
+            source.sourceCrs()
+        )
+
+        # 3. Preparação para colisões
+        spatial_index = QgsSpatialIndex(source.getFeatures())
+        feat_dict = {f.id(): f for f in source.getFeatures()}
+
         features = source.getFeatures()
         feature_count = source.featureCount()
         total = 100.0 / feature_count if feature_count > 0 else 0
@@ -101,24 +130,29 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             if feedback.isCanceled():
                 break
             
-            # Coleta pontos ao longo da linha original com o espaçamento definido
             points = VectorUtils.get_points_at_interval(feature.geometry(), spacing)
-            
-            # Cria a nova geometria padronizada. Se a linha for menor que o spacing, 
-            # usamos a geometria original ou garantimos que tenha ao menos 2 pontos.
             new_geom = QgsGeometry.fromPolylineXY(points) if len(points) >= 2 else feature.geometry()
+            key_prim = f"O{current}"
 
             new_feat = QgsFeature(output_fields)
             new_feat.setGeometry(new_geom)
             
-            # Atribui atributos originais e gera a chave única key_prim (ex: O0, O1...)
             attrs = feature.attributes()
-            attrs.append(f"O{current}")
+            attrs.append(key_prim)
             new_feat.setAttributes(attrs)
-            
             sink.addFeature(new_feat, QgsFeatureSink.FastInsert)
-            
+
+            # 4. Geração de Sensores Perpendiculares usando Utils
+            sensors = VectorLayerGeometry.generate_perpendicular_sensors(
+                points, key_prim, sensor_limit, spatial_index, feat_dict, feature.id(), perp_fields
+            )
+            for s in sensors:
+                perp_sink.addFeature(s, QgsFeatureSink.FastInsert)
+
             # Atualiza o feedback de progresso
             feedback.setProgress(int(current * total))
 
-        return {self.OUTPUT: dest_id}
+        return {
+            self.OUTPUT: dest_id,
+            self.PERP_OUTPUT: perp_dest_id
+        }
