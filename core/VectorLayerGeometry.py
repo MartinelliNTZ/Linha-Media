@@ -180,6 +180,80 @@ class VectorLayerGeometry:
         return cleaned_attributes
 
     @staticmethod
+    def get_most_common_target_by_key(layer_or_features, key_attr_name, target_attr_name):
+        """
+        Agrupa feicoes por um atributo-chave e retorna o valor mais frequente
+        do atributo-alvo em cada grupo.
+
+        Args:
+            layer_or_features (QgsFeatureSource | iterable[QgsFeature]):
+                Camada ou lista de feicoes a consultar.
+            key_attr_name (str): Nome do atributo usado no agrupamento.
+            target_attr_name (str): Nome do atributo cujo valor dominante sera retornado.
+
+        Returns:
+            dict: {valor_da_key: valor_mais_frequente_do_target}
+        """
+        if layer_or_features is None:
+            return {}
+
+        if not key_attr_name or not target_attr_name:
+            raise ValueError("Os atributos de chave e alvo devem ser informados.")
+
+        if hasattr(layer_or_features, "getFeatures"):
+            feature_list = list(layer_or_features.getFeatures())
+            fields = (
+                layer_or_features.fields()
+                if hasattr(layer_or_features, "fields")
+                else None
+            )
+        else:
+            feature_list = list(layer_or_features)
+            fields = feature_list[0].fields() if feature_list else None
+
+        if not feature_list:
+            return {}
+
+        field_names = fields.names() if fields else feature_list[0].fields().names()
+        for attr_name in [key_attr_name, target_attr_name]:
+            if attr_name not in field_names:
+                raise ValueError(
+                    "O atributo '{0}' nao existe nas feicoes informadas.".format(
+                        attr_name
+                    )
+                )
+
+        grouped_counts = {}
+        grouped_order = {}
+
+        for feature in feature_list:
+            key_value = feature[key_attr_name]
+            target_value = feature[target_attr_name]
+
+            if key_value in (None, "") or target_value in (None, ""):
+                continue
+
+            key_counts = grouped_counts.setdefault(key_value, {})
+            key_order = grouped_order.setdefault(key_value, {})
+
+            if target_value not in key_order:
+                key_order[target_value] = len(key_order)
+
+            key_counts[target_value] = key_counts.get(target_value, 0) + 1
+
+        most_common_by_key = {}
+        for key_value, target_counts in grouped_counts.items():
+            most_common_by_key[key_value] = max(
+                target_counts.items(),
+                key=lambda item: (
+                    item[1],
+                    -grouped_order[key_value][item[0]],
+                ),
+            )[0]
+
+        return most_common_by_key
+
+    @staticmethod
     def assign_keysec(vertex_records, start_sec_counter=0):
         """
         Atribui keySec agrupando vértices com a mesma assinatura de vizinhança.

@@ -211,6 +211,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         total = 100.0 / feature_count if feature_count > 0 else 0
         global_sec_counter = 0
         secondary_segment_features = []
+        secondary_sensor_features = []
         secondary_segment_id = 0
 
         for current, standardized_record in enumerate(standardized_records):
@@ -271,17 +272,6 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 secondary_segment_features.append(secondary_feature)
                 secondary_segment_id += 1
 
-                line_feature = QgsFeature(output_fields)
-                line_feature.setGeometry(segment_record["geometry"])
-                line_feature.setAttributes(
-                    VectorLayerGeometry.clear_attributes(
-                        segment_record["attributes"],
-                        output_fields,
-                        ["neighborE", "neighborD"],
-                    )
-                )
-                sink.addFeature(line_feature, QgsFeatureSink.FastInsert)
-
             for vertex_record in vertex_records:
                 vertex_feature = QgsFeature(vert_fields)
                 vertex_feature.setGeometry(
@@ -292,6 +282,8 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                         vertex_record["key"],
                         vertex_record["keyVertex"],
                         vertex_record["keySec"],
+                        vertex_record["neighborE"],
+                        vertex_record["neighborD"],
                     ]
                 )
                 vert_sink.addFeature(vertex_feature, QgsFeatureSink.FastInsert)
@@ -344,7 +336,45 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                         sensor_record["neighbor"],
                     ]
                 )
+                secondary_sensor_features.append(sensor_feature)
                 sec_perp_sink.addFeature(sensor_feature, QgsFeatureSink.FastInsert)
+
+        secondary_sensor_features_e = [
+            feature
+            for feature in secondary_sensor_features
+            if feature["side"] == "e"
+        ]
+        secondary_sensor_features_d = [
+            feature
+            for feature in secondary_sensor_features
+            if feature["side"] == "d"
+        ]
+
+        neighbor_e_by_keysec = VectorLayerGeometry.get_most_common_target_by_key(
+            secondary_sensor_features_e, secondary_key_attr, "neighbor"
+        )
+        neighbor_d_by_keysec = VectorLayerGeometry.get_most_common_target_by_key(
+            secondary_sensor_features_d, secondary_key_attr, "neighbor"
+        )
+
+        output_field_names = output_fields.names()
+        neighbor_e_index = output_field_names.index("neighborE")
+        neighbor_d_index = output_field_names.index("neighborD")
+
+        for segment_feature in secondary_segment_features:
+            output_attributes = VectorLayerGeometry.clear_attributes(
+                segment_feature.attributes(),
+                output_fields,
+                ["neighborE", "neighborD"],
+            )
+            key_sec = segment_feature[secondary_key_attr]
+            output_attributes[neighbor_e_index] = neighbor_e_by_keysec.get(key_sec)
+            output_attributes[neighbor_d_index] = neighbor_d_by_keysec.get(key_sec)
+
+            output_feature = QgsFeature(output_fields)
+            output_feature.setGeometry(segment_feature.geometry())
+            output_feature.setAttributes(output_attributes)
+            sink.addFeature(output_feature, QgsFeatureSink.FastInsert)
 
         return {
             self.OUTPUT: dest_id,
