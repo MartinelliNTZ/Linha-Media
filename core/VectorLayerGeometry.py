@@ -43,9 +43,7 @@ class VectorLayerGeometry:
         return spatial_index, feat_dict, fid_to_key
 
     @staticmethod
-    def standardize_line_feature(
-        feature, spacing, key_prim, temp_fields, key_attr_name="key_prim"
-    ):
+    def standardize_line_feature(feature, spacing, temp_fields, *, key):
         """
         Padroniza o espaçamento de uma linha e prepara sua representação intermediária.
 
@@ -61,11 +59,11 @@ class VectorLayerGeometry:
         temp_feature = QgsFeature(temp_fields)
         temp_feature.setId(feature.id())
         temp_feature.setGeometry(standardized_geometry)
-        temp_feature.setAttributes(feature.attributes() + [key_prim])
+        temp_feature.setAttributes(feature.attributes() + [key])
 
         return {
             "feature_id": feature.id(),
-            "key_prim": key_prim,
+            "key": key,
             "original_attrs": feature.attributes(),
             "geometry": standardized_geometry,
             "points": points,
@@ -73,7 +71,7 @@ class VectorLayerGeometry:
         }
 
     @staticmethod
-    def generate_perpendicular_records(points, key_prim, sensor_limit):
+    def generate_perpendicular_records(points, sensor_limit, *, key):
         """
         Gera registros de sensores perpendiculares sem cortar por vizinhança.
         """
@@ -81,7 +79,7 @@ class VectorLayerGeometry:
 
         for index, point in enumerate(points):
             p_start = QgsPointXY(point.x(), point.y())
-            key_vertex = f"{key_prim}_{index:04d}"
+            key_vertex = f"{key}_{index:04d}"
             az_local = VectorUtils.get_vertex_azimuth(points, index)
 
             for angle_offset in [90, -90]:
@@ -90,7 +88,7 @@ class VectorLayerGeometry:
                 key_s1 = f"{key_vertex}{side}"
                 sensor_records.append(
                     {
-                        "key_prim": key_prim,
+                        "key": key,
                         "keyVertex": key_vertex,
                         "keyS1": key_s1,
                         "vertex_index": index,
@@ -114,6 +112,7 @@ class VectorLayerGeometry:
         feat_dict,
         origin_feature_id,
         fid_to_key,
+        *,
         neighbor_key_attr_name,
         mother_geoms=None,
     ):
@@ -139,7 +138,7 @@ class VectorLayerGeometry:
         return sensor_records
 
     @staticmethod
-    def populate_vertex_neighbors(points, key_prim, sensor_records):
+    def populate_vertex_neighbors(points, sensor_records, *, key):
         """
         Consolida os vizinhos detectados pelos sensores em registros de vértices.
         """
@@ -151,8 +150,8 @@ class VectorLayerGeometry:
         for index, point in enumerate(points):
             vertex_records.append(
                 {
-                    "key_prim": key_prim,
-                    "keyVertex": f"{key_prim}_{index:04d}",
+                    "key": key,
+                    "keyVertex": f"{key}_{index:04d}",
                     "point": QgsPointXY(point.x(), point.y()),
                     "vertex_index": index,
                     "neighborE": sensor_map.get((index, "e")),
@@ -249,7 +248,7 @@ class VectorLayerGeometry:
         return vertex_records
 
     @staticmethod
-    def partition_standardized_line(points, original_attrs, key_prim, vertex_records):
+    def partition_standardized_line(points, original_attrs, vertex_records, *, key):
         """
         Particiona a linha padronizada por keySec e transfere neighborE/neighborD.
         """
@@ -273,7 +272,7 @@ class VectorLayerGeometry:
                             "geometry": QgsGeometry.fromPolylineXY(current_points),
                             "attributes": original_attrs
                             + [
-                                key_prim,
+                                key,
                                 current_key_sec,
                                 current_neighbor_e,
                                 current_neighbor_d,
@@ -296,7 +295,7 @@ class VectorLayerGeometry:
                     "geometry": QgsGeometry.fromPolylineXY(current_points),
                     "attributes": original_attrs
                     + [
-                        key_prim,
+                        key,
                         current_key_sec,
                         current_neighbor_e,
                         current_neighbor_d,
@@ -361,7 +360,6 @@ class VectorLayerGeometry:
     @staticmethod
     def generate_perpendicular_sensors(
         points,
-        key_prim,
         sensor_limit,
         spatial_index,
         feat_dict,
@@ -370,15 +368,18 @@ class VectorLayerGeometry:
         vert_fields,
         output_fields,
         original_attrs,
+        *,
+        key,
+        neighbor_key_attr_name,
         mother_geoms=None,
-        fid_to_key_prim=None,
+        fid_to_key=None,
         start_sec_counter=0,
     ):
         """
         Wrapper de compatibilidade baseado no fluxo particionado.
         """
         sensor_records = VectorLayerGeometry.generate_perpendicular_records(
-            points, key_prim, sensor_limit
+            points, sensor_limit, key=key
         )
         sensor_records = VectorLayerGeometry.trim_perpendicular_records(
             sensor_records,
@@ -386,18 +387,18 @@ class VectorLayerGeometry:
             spatial_index,
             feat_dict,
             feature_id,
-            fid_to_key_prim or {},
-            "key_prim",
+            fid_to_key or {},
+            neighbor_key_attr_name=neighbor_key_attr_name,
             mother_geoms=mother_geoms,
         )
         vertex_records = VectorLayerGeometry.populate_vertex_neighbors(
-            points, key_prim, sensor_records
+            points, sensor_records, key=key
         )
         next_sec_counter = VectorLayerGeometry.assign_keysec(
             vertex_records, start_sec_counter
         )
         segment_records = VectorLayerGeometry.partition_standardized_line(
-            points, original_attrs, key_prim, vertex_records
+            points, original_attrs, vertex_records, key=key
         )
 
         sensor_features = []
@@ -406,7 +407,7 @@ class VectorLayerGeometry:
             feature.setGeometry(record["geometry"])
             feature.setAttributes(
                 [
-                    record["key_prim"],
+                    record["key"],
                     record["keyVertex"],
                     record["keyS1"],
                     record["side"],
@@ -421,7 +422,7 @@ class VectorLayerGeometry:
             feature.setGeometry(QgsGeometry.fromPointXY(record["point"]))
             feature.setAttributes(
                 [
-                    record["key_prim"],
+                    record["key"],
                     record["keyVertex"],
                     record["keySec"],
                     record["neighborE"],

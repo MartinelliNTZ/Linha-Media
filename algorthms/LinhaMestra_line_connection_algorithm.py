@@ -115,30 +115,39 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
         spacing = self.parameterAsDouble(parameters, self.SPACING, context)
         min_segment = self.parameterAsInt(parameters, self.MIN_SEGMENT, context)
+        primary_key_attr = "key_prim"
+        secondary_key_attr = "keySec"
 
         if source is None:
             raise QgsProcessingException(self.tr("Camada de entrada inválida."))
 
         temp_fields = source.fields()
-        temp_fields.append(QgsField("key_prim", QVariant.String))
+        temp_fields.append(QgsField(primary_key_attr, QVariant.String))
 
         output_fields = source.fields()
-        output_fields.append(QgsField("key_prim", QVariant.String))
-        output_fields.append(QgsField("keySec", QVariant.String))
+        output_fields.append(QgsField(primary_key_attr, QVariant.String))
+        output_fields.append(QgsField(secondary_key_attr, QVariant.String))
         output_fields.append(QgsField("neighborE", QVariant.String))
         output_fields.append(QgsField("neighborD", QVariant.String))
 
         perp_fields = QgsFields()
-        perp_fields.append(QgsField("key_prim", QVariant.String))
+        perp_fields.append(QgsField(primary_key_attr, QVariant.String))
         perp_fields.append(QgsField("keyVertex", QVariant.String))
         perp_fields.append(QgsField("keyS1", QVariant.String))
         perp_fields.append(QgsField("side", QVariant.String))
         perp_fields.append(QgsField("neighbor", QVariant.String))
 
+        sec_perp_fields = QgsFields()
+        sec_perp_fields.append(QgsField(secondary_key_attr, QVariant.String))
+        sec_perp_fields.append(QgsField("keyVertex", QVariant.String))
+        sec_perp_fields.append(QgsField("keyS1", QVariant.String))
+        sec_perp_fields.append(QgsField("side", QVariant.String))
+        sec_perp_fields.append(QgsField("neighbor", QVariant.String))
+
         vert_fields = QgsFields()
-        vert_fields.append(QgsField("key_prim", QVariant.String))
+        vert_fields.append(QgsField(primary_key_attr, QVariant.String))
         vert_fields.append(QgsField("keyVertex", QVariant.String))
-        vert_fields.append(QgsField("keySec", QVariant.String))
+        vert_fields.append(QgsField(secondary_key_attr, QVariant.String))
         vert_fields.append(QgsField("neighborE", QVariant.String))
         vert_fields.append(QgsField("neighborD", QVariant.String))
 
@@ -173,7 +182,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             parameters,
             self.SEC_PERP_OUTPUT,
             context,
-            perp_fields,
+            sec_perp_fields,
             QgsWkbTypes.LineString,
             source.sourceCrs(),
         )
@@ -185,13 +194,17 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         for current, feature in enumerate(source_features):
             key_prim = f"O{current:04d}"
             standardized_record = VectorLayerGeometry.standardize_line_feature(
-                feature, spacing, key_prim, temp_fields
+                feature, spacing, temp_fields, key=key_prim
             )
             standardized_records.append(standardized_record)
             standardized_features.append(standardized_record["feature"])
 
-        spatial_index, feat_dict, fid_to_key_prim = VectorLayerGeometry.create_spatial_context(
-            standardized_features, "key_prim"
+        (
+            spatial_index,
+            feat_dict,
+            fid_to_primary_key,
+        ) = VectorLayerGeometry.create_spatial_context(
+            standardized_features, primary_key_attr
         )
 
         feature_count = len(standardized_records)
@@ -205,10 +218,10 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 break
 
             points = standardized_record["points"]
-            key_prim = standardized_record["key_prim"]
+            key_prim = standardized_record["key"]
 
             sensor_records = VectorLayerGeometry.generate_perpendicular_records(
-                points, key_prim, sensor_limit
+                points, sensor_limit, key=key_prim
             )
             sensor_records = VectorLayerGeometry.trim_perpendicular_records(
                 sensor_records,
@@ -216,12 +229,12 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 spatial_index,
                 feat_dict,
                 standardized_record["feature"].id(),
-                fid_to_key_prim,
-                "key_prim",
+                fid_to_primary_key,
+                neighbor_key_attr_name=primary_key_attr,
             )
 
             vertex_records = VectorLayerGeometry.populate_vertex_neighbors(
-                points, key_prim, sensor_records
+                points, sensor_records, key=key_prim
             )
             global_sec_counter = VectorLayerGeometry.assign_keysec(
                 vertex_records, global_sec_counter
@@ -232,8 +245,8 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             segment_records = VectorLayerGeometry.partition_standardized_line(
                 points,
                 standardized_record["original_attrs"],
-                key_prim,
                 vertex_records,
+                key=key_prim,
             )
 
             for sensor_record in sensor_records:
@@ -241,7 +254,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 sensor_feature.setGeometry(sensor_record["geometry"])
                 sensor_feature.setAttributes(
                     [
-                        sensor_record["key_prim"],
+                        sensor_record["key"],
                         sensor_record["keyVertex"],
                         sensor_record["keyS1"],
                         sensor_record["side"],
@@ -276,7 +289,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 )
                 vertex_feature.setAttributes(
                     [
-                        vertex_record["key_prim"],
+                        vertex_record["key"],
                         vertex_record["keyVertex"],
                         vertex_record["keySec"],
                     ]
@@ -288,9 +301,9 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         (
             secondary_spatial_index,
             secondary_feat_dict,
-            fid_to_key_sec,
+            fid_to_secondary_key,
         ) = VectorLayerGeometry.create_spatial_context(
-            secondary_segment_features, "keySec"
+            secondary_segment_features, secondary_key_attr
         )
 
         for segment_feature in secondary_segment_features:
@@ -302,7 +315,9 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
             secondary_sensor_records = (
                 VectorLayerGeometry.generate_perpendicular_records(
-                    segment_points, segment_feature["keySec"], sensor_limit
+                    segment_points,
+                    sensor_limit,
+                    key=segment_feature[secondary_key_attr],
                 )
             )
             secondary_sensor_records = (
@@ -312,17 +327,17 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                     secondary_spatial_index,
                     secondary_feat_dict,
                     segment_feature.id(),
-                    fid_to_key_sec,
-                    "keySec",
+                    fid_to_secondary_key,
+                    neighbor_key_attr_name=secondary_key_attr,
                 )
             )
 
             for sensor_record in secondary_sensor_records:
-                sensor_feature = QgsFeature(perp_fields)
+                sensor_feature = QgsFeature(sec_perp_fields)
                 sensor_feature.setGeometry(sensor_record["geometry"])
                 sensor_feature.setAttributes(
                     [
-                        sensor_record["key_prim"],
+                        sensor_record["key"],
                         sensor_record["keyVertex"],
                         sensor_record["keyS1"],
                         sensor_record["side"],
