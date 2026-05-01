@@ -12,9 +12,11 @@ from qgis.core import (
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterNumber,
+    QgsVectorLayer,
     QgsWkbTypes,
 )
 from qgis.PyQt.QtCore import QCoreApplication, QVariant
+from ..core.MatchJudge import MatchJudge
 from ..core.VectorLayerGeometry import VectorLayerGeometry
 
 
@@ -360,6 +362,15 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         output_field_names = output_fields.names()
         neighbor_e_index = output_field_names.index("neighborE")
         neighbor_d_index = output_field_names.index("neighborD")
+        judge_layer = QgsVectorLayer("MultiLineString", "match_judge_preview", "memory")
+        judge_features = []
+
+        if judge_layer.isValid():
+            judge_layer.setCrs(source.sourceCrs())
+            judge_layer.dataProvider().addAttributes(
+                [field for field in output_fields]
+            )
+            judge_layer.updateFields()
 
         for segment_feature in secondary_segment_features:
             output_attributes = VectorLayerGeometry.clear_attributes(
@@ -375,6 +386,49 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             output_feature.setGeometry(segment_feature.geometry())
             output_feature.setAttributes(output_attributes)
             sink.addFeature(output_feature, QgsFeatureSink.FastInsert)
+
+            if judge_layer.isValid():
+                judge_feature = QgsFeature(judge_layer.fields())
+                judge_geometry = segment_feature.geometry()
+                if judge_geometry and not judge_geometry.isEmpty():
+                    judge_parts = (
+                        judge_geometry.asMultiPolyline()
+                        if judge_geometry.isMultipart()
+                        else [judge_geometry.asPolyline()]
+                    )
+                    judge_feature.setGeometry(
+                        QgsGeometry.fromMultiPolylineXY(judge_parts)
+                    )
+                judge_feature.setAttributes(output_attributes)
+                judge_features.append(judge_feature)
+
+        if judge_layer.isValid():
+            judge_layer.dataProvider().addFeatures(judge_features)
+            judge_layer.updateExtents()
+
+            judge = MatchJudge(
+                field_key_prim=primary_key_attr,
+                field_key_sec=secondary_key_attr,
+                field_neigh_e="neighborE",
+                field_neigh_d="neighborD",
+            )
+            judge_result = judge.analyze(judge_layer)
+
+            feedback.pushInfo("=== MatchJudge ===")
+            feedback.pushInfo(
+                "Resumo: validos={0} invalidos={1}".format(
+                    len(judge_result["valid"]),
+                    len(judge_result["invalid"]),
+                )
+            )
+            feedback.pushInfo(judge.to_json(judge_result))
+
+            for message in judge_result["log"]:
+                feedback.pushInfo(message)
+        else:
+            feedback.pushInfo(
+                "MatchJudge: nao foi possivel criar a camada temporaria de analise."
+            )
 
         return {
             self.OUTPUT: dest_id,

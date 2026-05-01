@@ -15,7 +15,7 @@ Uso:
 """
 
 import json
-from qgis.core import QgsVectorLayer
+from qgis.core import QgsFeatureRequest, QgsVectorLayer
 
 
 class MatchJudge:
@@ -315,8 +315,11 @@ class MatchJudge:
         Usa getFeatures com filtro de atributo para pegar o estado atual.
         Retorna None se a feição não existir mais (foi deletada).
         """
-        req = layer.getFeatures(f'"{self.f_sec}" = \'{ks}\'')
-        return next(req, None)
+        escaped_ks = str(ks).replace("'", "''")
+        request = QgsFeatureRequest().setFilterExpression(
+            f'"{self.f_sec}" = \'{escaped_ks}\''
+        )
+        return next(layer.getFeatures(request), None)
 
 
 # ─── Uso no console Python do QGIS ───────────────────────────────────────────
