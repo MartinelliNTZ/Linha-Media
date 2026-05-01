@@ -1,3 +1,5 @@
 segmentacao ta belzeza,
+precisamos validar os pares de segmentos, para isso vamos
+impedir incesto e mesclars as menores que nao fazem sentido 
 criar agora um casamenteiro que vai unir as linhas 
 e passar para  o modelo conectar
