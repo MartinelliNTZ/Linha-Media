@@ -235,7 +235,13 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             for segment_record in segment_records:
                 line_feature = QgsFeature(output_fields)
                 line_feature.setGeometry(segment_record["geometry"])
-                line_feature.setAttributes(segment_record["attributes"])
+                line_feature.setAttributes(
+                    VectorLayerGeometry.clear_attributes(
+                        segment_record["attributes"],
+                        output_fields,
+                        ["neighborE", "neighborD"],
+                    )
+                )
                 sink.addFeature(line_feature, QgsFeatureSink.FastInsert)
 
             for vertex_record in vertex_records:
@@ -248,8 +254,6 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                         vertex_record["key_prim"],
                         vertex_record["keyVertex"],
                         vertex_record["keySec"],
-                        vertex_record["neighborE"],
-                        vertex_record["neighborD"],
                     ]
                 )
                 vert_sink.addFeature(vertex_feature, QgsFeatureSink.FastInsert)

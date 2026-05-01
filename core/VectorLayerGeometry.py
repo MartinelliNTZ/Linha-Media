@@ -164,6 +164,23 @@ class VectorLayerGeometry:
         return vertex_records
 
     @staticmethod
+    def clear_attributes(attributes, fields, attribute_names):
+        """
+        Limpa atributos de uma lista genérica a partir de seus nomes.
+        """
+        if not attributes or not fields or not attribute_names:
+            return attributes
+
+        cleaned_attributes = list(attributes)
+        field_names = fields.names() if hasattr(fields, "names") else list(fields)
+
+        for attribute_name in attribute_names:
+            if attribute_name in field_names:
+                cleaned_attributes[field_names.index(attribute_name)] = None
+
+        return cleaned_attributes
+
+    @staticmethod
     def assign_keysec(vertex_records, start_sec_counter=0):
         """
         Atribui keySec agrupando vértices com a mesma assinatura de vizinhança.
