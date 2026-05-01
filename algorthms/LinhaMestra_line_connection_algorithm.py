@@ -25,6 +25,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     MIN_SEGMENT = "MIN_SEGMENT"
     OUTPUT = "OUTPUT"
     PERP_OUTPUT = "PERP_OUTPUT"
+    SEC_PERP_OUTPUT = "SEC_PERP_OUTPUT"
     VERT_OUTPUT = "VERT_OUTPUT"
 
     def tr(self, string):
@@ -103,6 +104,12 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterFeatureSink(self.VERT_OUTPUT, self.tr("Vértices"))
         )
 
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.SEC_PERP_OUTPUT, self.tr("Sensores Secundarios")
+            )
+        )
+
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
@@ -162,6 +169,15 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             source.sourceCrs(),
         )
 
+        (sec_perp_sink, sec_perp_dest_id) = self.parameterAsSink(
+            parameters,
+            self.SEC_PERP_OUTPUT,
+            context,
+            perp_fields,
+            QgsWkbTypes.LineString,
+            source.sourceCrs(),
+        )
+
         source_features = list(source.getFeatures())
         standardized_records = []
         standardized_features = []
@@ -181,6 +197,8 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         feature_count = len(standardized_records)
         total = 100.0 / feature_count if feature_count > 0 else 0
         global_sec_counter = 0
+        secondary_segment_features = []
+        secondary_segment_id = 0
 
         for current, standardized_record in enumerate(standardized_records):
             if feedback.isCanceled():
@@ -233,6 +251,13 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 perp_sink.addFeature(sensor_feature, QgsFeatureSink.FastInsert)
 
             for segment_record in segment_records:
+                secondary_feature = QgsFeature(output_fields)
+                secondary_feature.setId(secondary_segment_id)
+                secondary_feature.setGeometry(segment_record["geometry"])
+                secondary_feature.setAttributes(segment_record["attributes"])
+                secondary_segment_features.append(secondary_feature)
+                secondary_segment_id += 1
+
                 line_feature = QgsFeature(output_fields)
                 line_feature.setGeometry(segment_record["geometry"])
                 line_feature.setAttributes(
@@ -260,8 +285,55 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
             feedback.setProgress(int(current * total))
 
+        (
+            secondary_spatial_index,
+            secondary_feat_dict,
+            fid_to_key_sec,
+        ) = VectorLayerGeometry.create_spatial_context(
+            secondary_segment_features, "keySec"
+        )
+
+        for segment_feature in secondary_segment_features:
+            segment_points = [
+                point for point in segment_feature.geometry().vertices()
+            ]
+            if len(segment_points) < 2:
+                continue
+
+            secondary_sensor_records = (
+                VectorLayerGeometry.generate_perpendicular_records(
+                    segment_points, segment_feature["keySec"], sensor_limit
+                )
+            )
+            secondary_sensor_records = (
+                VectorLayerGeometry.trim_perpendicular_records(
+                    secondary_sensor_records,
+                    sensor_limit,
+                    secondary_spatial_index,
+                    secondary_feat_dict,
+                    segment_feature.id(),
+                    fid_to_key_sec,
+                    "keySec",
+                )
+            )
+
+            for sensor_record in secondary_sensor_records:
+                sensor_feature = QgsFeature(perp_fields)
+                sensor_feature.setGeometry(sensor_record["geometry"])
+                sensor_feature.setAttributes(
+                    [
+                        sensor_record["key_prim"],
+                        sensor_record["keyVertex"],
+                        sensor_record["keyS1"],
+                        sensor_record["side"],
+                        sensor_record["neighbor"],
+                    ]
+                )
+                sec_perp_sink.addFeature(sensor_feature, QgsFeatureSink.FastInsert)
+
         return {
             self.OUTPUT: dest_id,
             self.PERP_OUTPUT: perp_dest_id,
+            self.SEC_PERP_OUTPUT: sec_perp_dest_id,
             self.VERT_OUTPUT: vert_dest_id,
         }
