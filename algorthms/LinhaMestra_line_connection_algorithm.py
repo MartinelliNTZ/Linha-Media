@@ -17,6 +17,7 @@ from qgis.core import (
 )
 from qgis.PyQt.QtCore import QCoreApplication, QVariant
 from ..core.MatchJudge import MatchJudge
+from ..core.SimpleConnectionJudge import SimpleConnectionJudge
 from ..core.VectorLayerGeometry import VectorLayerGeometry
 
 
@@ -29,6 +30,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     PERP_OUTPUT = "PERP_OUTPUT"
     SEC_PERP_OUTPUT = "SEC_PERP_OUTPUT"
     VERT_OUTPUT = "VERT_OUTPUT"
+    PAIR_CONN_OUTPUT = "PAIR_CONN_OUTPUT"
 
     def tr(self, string):
         return QCoreApplication.translate("Processing", string)
@@ -112,6 +114,13 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             )
         )
 
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.PAIR_CONN_OUTPUT,
+                self.tr("Conexoes por Par (SimpleConnectionJudge)"),
+            )
+        )
+
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
@@ -185,6 +194,22 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             self.SEC_PERP_OUTPUT,
             context,
             sec_perp_fields,
+            QgsWkbTypes.LineString,
+            source.sourceCrs(),
+        )
+
+        pair_conn_fields = QgsFields()
+        pair_conn_fields.append(QgsField("pair_id", QVariant.Int))
+        pair_conn_fields.append(QgsField("pair_status", QVariant.String))
+        pair_conn_fields.append(QgsField("id_conexao", QVariant.Int))
+        pair_conn_fields.append(QgsField("keyFather", QVariant.String))
+        pair_conn_fields.append(QgsField("keyMother", QVariant.String))
+
+        (pair_conn_sink, pair_conn_dest_id) = self.parameterAsSink(
+            parameters,
+            self.PAIR_CONN_OUTPUT,
+            context,
+            pair_conn_fields,
             QgsWkbTypes.LineString,
             source.sourceCrs(),
         )
@@ -425,6 +450,106 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
             for message in judge_result["log"]:
                 feedback.pushInfo(message)
+
+            judge_feature_by_keysec = {}
+            for judge_feature in judge_result["layer"].getFeatures():
+                key_sec = judge_feature[secondary_key_attr]
+                if key_sec not in (None, ""):
+                    judge_feature_by_keysec[str(key_sec)] = judge_feature
+
+            pair_batches = [
+                ("valid", judge_result["valid"]),
+                ("invalid", judge_result["invalid"]),
+            ]
+            generated_pair_connections = 0
+            processed_pairs = 0
+
+            for pair_status, pairs in pair_batches:
+                for key_a, key_b in pairs:
+                    feat_a = judge_feature_by_keysec.get(str(key_a))
+                    feat_b = judge_feature_by_keysec.get(str(key_b))
+
+                    if feat_a is None or feat_b is None:
+                        feedback.pushInfo(
+                            "SimpleConnectionJudge: par ignorado por falta de geometria "
+                            "apos MatchJudge ({0}, {1}).".format(key_a, key_b)
+                        )
+                        continue
+
+                    order_a = (
+                        str(feat_a[primary_key_attr] or ""),
+                        str(feat_a[secondary_key_attr] or ""),
+                    )
+                    order_b = (
+                        str(feat_b[primary_key_attr] or ""),
+                        str(feat_b[secondary_key_attr] or ""),
+                    )
+                    if order_b < order_a:
+                        feat_a, feat_b = feat_b, feat_a
+
+                    geom_a = feat_a.geometry()
+                    geom_b = feat_b.geometry()
+                    if (
+                        geom_a is None
+                        or geom_b is None
+                        or geom_a.isEmpty()
+                        or geom_b.isEmpty()
+                    ):
+                        feedback.pushInfo(
+                            "SimpleConnectionJudge: par ignorado por geometria vazia "
+                            "({0}, {1}).".format(
+                                feat_a[secondary_key_attr],
+                                feat_b[secondary_key_attr],
+                            )
+                        )
+                        continue
+
+                    vertex_count_a = sum(1 for _ in geom_a.vertices())
+                    vertex_count_b = sum(1 for _ in geom_b.vertices())
+                    if vertex_count_a < 2 or vertex_count_b < 2:
+                        feedback.pushInfo(
+                            "SimpleConnectionJudge: par ignorado por possuir menos de 2 "
+                            "vertices ({0}, {1}).".format(
+                                feat_a[secondary_key_attr],
+                                feat_b[secondary_key_attr],
+                            )
+                        )
+                        continue
+
+                    processed_pairs += 1
+                    target_n = max(vertex_count_a - 1, vertex_count_b - 1, 1)
+                    pair_connections = SimpleConnectionJudge.solve_nearest_with_criteria(
+                        geom_a,
+                        geom_b,                        
+                        str(feat_a[secondary_key_attr]),
+                        str(feat_b[secondary_key_attr]),                        
+                    )
+
+                    for connection in pair_connections:
+                        pair_feature = QgsFeature(pair_conn_fields)
+                        pair_feature.setGeometry(connection["geom"])
+                        pair_feature.setAttributes(
+                            [
+                                processed_pairs,
+                                pair_status,
+                                connection.get("id", 0),
+                                connection.get("keyFather"),
+                                connection.get("keyMother"),
+                            ]
+                        )
+                        pair_conn_sink.addFeature(
+                            pair_feature,
+                            QgsFeatureSink.FastInsert,
+                        )
+                        generated_pair_connections += 1
+
+            feedback.pushInfo("=== SimpleConnectionJudge ===")
+            feedback.pushInfo(
+                "Resumo: pares_processados={0} conexoes_geradas={1}".format(
+                    processed_pairs,
+                    generated_pair_connections,
+                )
+            )
         else:
             feedback.pushInfo(
                 "MatchJudge: nao foi possivel criar a camada temporaria de analise."
@@ -435,4 +560,5 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             self.PERP_OUTPUT: perp_dest_id,
             self.SEC_PERP_OUTPUT: sec_perp_dest_id,
             self.VERT_OUTPUT: vert_dest_id,
+            self.PAIR_CONN_OUTPUT: pair_conn_dest_id,
         }
