@@ -135,32 +135,57 @@ class MatchJudge:
         self, layer: QgsVectorLayer, index: dict, log: list
     ) -> list:
         """
-        Passo 2 — para cada feição A, olha neighborE e neighborD.
-        Se o vizinho existe na layer → forma um par.
-        Passo 3 embutido: frozenset garante A↔B == B↔A sem duplicatas.
-
-        Retorna lista de frozenset({ks_a, ks_b}).
+        Monta pares válidos entre linhas, impedindo:
+            - duplicatas
+            - auto referência
+            - incesto (mesmo key_prim)
         """
-        seen   = set()
-        pairs  = []
+        seen = set()
+        pairs = []
+        incest_blocked = 0
 
         for feat in layer.getFeatures():
             ks_a = feat[self.f_sec]
+            kp_a = feat[self.f_prim]
+
             if not ks_a:
                 continue
 
             for nb in (feat[self.f_ne], feat[self.f_nd]):
                 if not nb or nb not in index:
                     continue
-                key = frozenset({ks_a, nb})
+
+                feat_b = index.get(nb)
+                if feat_b is None:
+                    continue
+
+                ks_b = feat_b[self.f_sec]
+                kp_b = feat_b[self.f_prim]
+
+                # ── BLOQUEIO 1: auto relação ─────────────────────────────
+                if ks_a == ks_b:
+                    continue
+
+                # ── BLOQUEIO 2: incesto (mesmo key_prim) ────────────────
+                if kp_a == kp_b:
+                    incest_blocked += 1
+                    log.append(
+                        f"    INCesto BLOQUEADO: {ks_a} ↔ {ks_b} (key_prim={kp_a})"
+                    )
+                    continue
+
+                # ── Deduplicação ────────────────────────────────────────
+                key = frozenset({ks_a, ks_b})
                 if key in seen:
                     continue
+
                 seen.add(key)
                 pairs.append(key)
 
         log.append(f"[2] Pares brutos montados: {len(pairs)}")
-        return pairs
+        log.append(f"[2.1] Pares bloqueados por incesto: {incest_blocked}")
 
+        return pairs
     # ─────────────────────────────────────────────────────────────────────────
 
     def _classify(
@@ -321,22 +346,3 @@ class MatchJudge:
         )
         return next(layer.getFeatures(request), None)
 
-
-# ─── Uso no console Python do QGIS ───────────────────────────────────────────
-#
-#   from match_judge import MatchJudge
-#
-#   judge = MatchJudge(
-#       field_key_prim = "key_prim",
-#       field_key_sec  = "keySec",
-#       field_neigh_e  = "neighborE",
-#       field_neigh_d  = "neighborD",
-#   )
-#
-#   layer  = layer a ser analisada
-#   result = judge.analyze(layer)
-#
-#   print(judge.to_json(result))
-#
-#   for msg in result["log"]:
-#       print(msg)

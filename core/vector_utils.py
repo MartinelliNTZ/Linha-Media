@@ -318,38 +318,87 @@ class VectorUtils:
     @staticmethod
     def decide_base_by_endpoint(geom1, geom2):
         """
-        Decide qual linha deve ser a 'Base' (Pai) usando a lógica de sincronismo:
-        Retorna True se geom1 for a base, False se for geom2.
+        Decide qual linha deve ser a Base (Pai).
+
+        CORREÇÃO:
+        Antes: comparava as 4 pontas individualmente e qualquer ponta global podia vencer.
+        Agora: avalia as 2 pontas de cada linha, escolhe a MELHOR ponta de cada linha,
+        e só depois compara Linha 1 vs Linha 2.
+
+        Retorna:
+            True  -> geom1 é Pai
+            False -> geom2 é Pai
         """
         def check_endpoint(pt, target_geom):
-            nearest_pt = target_geom.nearestPoint(QgsGeometry.fromPointXY(pt)).asPoint()
+            nearest_pt = target_geom.nearestPoint(
+                QgsGeometry.fromPointXY(pt)
+            ).asPoint()
+
             nodes = list(target_geom.vertices())
-            d_start = nearest_pt.distance(QgsPointXY(nodes[0].x(), nodes[0].y()))
-            d_end = nearest_pt.distance(QgsPointXY(nodes[-1].x(), nodes[-1].y()))
-            # Consideramos 'meio' se estiver a mais de 1cm das pontas
+            if not nodes:
+                return False, float('inf')
+
+            start_pt = QgsPointXY(nodes[0].x(), nodes[0].y())
+            end_pt = QgsPointXY(nodes[-1].x(), nodes[-1].y())
+
+            d_start = nearest_pt.distance(start_pt)
+            d_end = nearest_pt.distance(end_pt)
+
+            # Meio = nao encostou nas pontas
             is_mid = d_start > 0.01 and d_end > 0.01
+
+            # Distancia da ponta ate a linha alvo
             return is_mid, pt.distance(nearest_pt)
 
-        v1 = list(geom1.vertices())
-        v2 = list(geom2.vertices())
-        if not v1 or not v2: return True
+        def evaluate_line(source_geom, target_geom):
+            """
+            Analisa as DUAS pontas da linha e retorna:
+            - melhor ponta que cai no meio (prioridade)
+            - melhor distancia absoluta (fallback)
+            """
+            verts = list(source_geom.vertices())
+            if not verts:
+                return float('inf'), float('inf')
 
-        tests = [
-            ('L1', check_endpoint(QgsPointXY(v1[0].x(), v1[0].y()), geom2)),
-            ('L1', check_endpoint(QgsPointXY(v1[-1].x(), v1[-1].y()), geom2)),
-            ('L2', check_endpoint(QgsPointXY(v2[0].x(), v2[0].y()), geom1)),
-            ('L2', check_endpoint(QgsPointXY(v2[-1].x(), v2[-1].y()), geom1))
-        ]
+            endpoints = [
+                QgsPointXY(verts[0].x(), verts[0].y()),
+                QgsPointXY(verts[-1].x(), verts[-1].y())
+            ]
 
-        # Prioridade 1: Quem liga no meio ganha (is_mid == True)
-        mids = [t for t in tests if t[1][0]]
-        if mids:
-            winner = min(mids, key=lambda x: x[1][1])
-            return winner[0] == 'L1'
+            best_mid = float('inf')
+            best_any = float('inf')
 
-        # Prioridade 2: Menor distância absoluta entre pontas
-        winner = min(tests, key=lambda x: x[1][1])
-        return winner[0] == 'L1'
+            for pt in endpoints:
+                is_mid, dist = check_endpoint(pt, target_geom)
+
+                best_any = min(best_any, dist)
+
+                if is_mid:
+                    best_mid = min(best_mid, dist)
+
+            return best_mid, best_any
+
+        # Avalia linha inteira, nao ponta solta
+        l1_mid, l1_any = evaluate_line(geom1, geom2)
+        l2_mid, l2_any = evaluate_line(geom2, geom1)
+
+        # PRIORIDADE 1:
+        # Quem tem melhor ponta no meio
+        l1_has_mid = l1_mid != float('inf')
+        l2_has_mid = l2_mid != float('inf')
+
+        if l1_has_mid and not l2_has_mid:
+            return True
+
+        if l2_has_mid and not l1_has_mid:
+            return False
+
+        if l1_has_mid and l2_has_mid:
+            return l1_mid <= l2_mid
+
+        # PRIORIDADE 2:
+        # Se nenhuma ponta cai no meio, menor distancia absoluta
+        return l1_any <= l2_any
 
     @staticmethod
     def align_by_endpoint_logic(geom1, geom2):
