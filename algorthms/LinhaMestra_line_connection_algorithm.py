@@ -55,6 +55,58 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             "Padroniza a linha, gera perpendiculares, identifica vizinhos e particiona os segmentos."
         )
 
+    @staticmethod
+    def _classify_pair_connection_statuses(connection_records, orphan_vertex_key):
+        father_counts = {}
+        mother_counts = {}
+
+        for record in connection_records:
+            father_key = record.get("vtxKeyFather")
+            mother_key = record.get("vtxKeyMother")
+
+            if father_key not in (None, "", orphan_vertex_key):
+                father_counts[str(father_key)] = (
+                    father_counts.get(str(father_key), 0) + 1
+                )
+
+            if mother_key not in (None, "", orphan_vertex_key):
+                mother_counts[str(mother_key)] = (
+                    mother_counts.get(str(mother_key), 0) + 1
+                )
+
+        summary = {
+            "normal": 0,
+            "duplicated F": 0,
+            "duplicated M": 0,
+            "duplicated A": 0,
+        }
+
+        for record in connection_records:
+            father_key = record.get("vtxKeyFather")
+            mother_key = record.get("vtxKeyMother")
+
+            father_duplicated = (
+                father_key not in (None, "", orphan_vertex_key)
+                and father_counts.get(str(father_key), 0) > 1
+            )
+            mother_duplicated = (
+                mother_key not in (None, "", orphan_vertex_key)
+                and mother_counts.get(str(mother_key), 0) > 1
+            )
+
+            if father_duplicated and mother_duplicated:
+                record["Cstatus"] = "duplicated A"
+            elif father_duplicated:
+                record["Cstatus"] = "duplicated F"
+            elif mother_duplicated:
+                record["Cstatus"] = "duplicated M"
+            else:
+                record["Cstatus"] = "normal"
+
+            summary[record["Cstatus"]] = summary.get(record["Cstatus"], 0) + 1
+
+        return summary
+
     def initAlgorithm(self, config=None):
         self.addParameter(
             QgsProcessingParameterFeatureSource(
@@ -69,7 +121,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 self.SENSOR_LIMIT,
                 self.tr("Limite do Sensor"),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=400,
+                defaultValue=150,
             )
         )
 
@@ -78,7 +130,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 self.SPACING,
                 self.tr("Espaçamento entre Partições"),
                 type=QgsProcessingParameterNumber.Double,
-                defaultValue=25.0,
+                defaultValue=50,
             )
         )
 
@@ -140,6 +192,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         output_fields.append(QgsField(secondary_key_attr, QVariant.String))
         output_fields.append(QgsField("neighborE", QVariant.String))
         output_fields.append(QgsField("neighborD", QVariant.String))
+        output_fields.append(QgsField("lenght", QVariant.Double))
 
         perp_fields = QgsFields()
         perp_fields.append(QgsField(primary_key_attr, QVariant.String))
@@ -206,6 +259,8 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         pair_conn_fields.append(QgsField("keyMother", QVariant.String))
         pair_conn_fields.append(QgsField("vtxKeyFather", QVariant.String))
         pair_conn_fields.append(QgsField("vtxKeyMother", QVariant.String))
+        pair_conn_fields.append(QgsField("lenght", QVariant.Double))
+        pair_conn_fields.append(QgsField("Cstatus", QVariant.String))
 
         (pair_conn_sink, pair_conn_dest_id) = self.parameterAsSink(
             parameters,
@@ -470,8 +525,8 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 ("valid", judge_result["valid"]),
                 ("invalid", judge_result["invalid"]),
             ]
-            generated_pair_connections = 0
             processed_pairs = 0
+            pair_connection_records = []
 
             for pair_status, pairs in pair_batches:
                 for key_a, key_b in pairs:
@@ -545,30 +600,64 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                     )
 
                     for connection in pair_connections:
-                        pair_feature = QgsFeature(pair_conn_fields)
-                        pair_feature.setGeometry(connection["geom"])
-                        pair_feature.setAttributes(
-                            [
-                                processed_pairs,
-                                pair_status,
-                                connection.get("id", 0),
-                                connection.get("keyFather"),
-                                connection.get("keyMother"),
-                                connection.get("vtxKeyFather"),
-                                connection.get("vtxKeyMother"),
-                            ]
+                        connection_geom = connection["geom"]
+                        pair_connection_records.append(
+                            {
+                                "pair_id": processed_pairs,
+                                "pair_status": pair_status,
+                                "id_conexao": connection.get("id", 0),
+                                "keyFather": connection.get("keyFather"),
+                                "keyMother": connection.get("keyMother"),
+                                "vtxKeyFather": connection.get("vtxKeyFather"),
+                                "vtxKeyMother": connection.get("vtxKeyMother"),
+                                "lenght": VectorLayerGeometry.calculate_geometry_length(
+                                    connection_geom
+                                ),
+                                "Cstatus": None,
+                                "geom": connection_geom,
+                            }
                         )
-                        pair_conn_sink.addFeature(
-                            pair_feature,
-                            QgsFeatureSink.FastInsert,
-                        )
-                        generated_pair_connections += 1
+
+            cstatus_summary = self._classify_pair_connection_statuses(
+                pair_connection_records,
+                SimpleConnectionJudge.ORPHAN_VERTEX_KEY,
+            )
+            generated_pair_connections = len(pair_connection_records)
+
+            for record in pair_connection_records:
+                pair_feature = QgsFeature(pair_conn_fields)
+                pair_feature.setGeometry(record["geom"])
+                pair_feature.setAttributes(
+                    [
+                        record.get("pair_id", 0),
+                        record.get("pair_status"),
+                        record.get("id_conexao", 0),
+                        record.get("keyFather"),
+                        record.get("keyMother"),
+                        record.get("vtxKeyFather"),
+                        record.get("vtxKeyMother"),
+                        record.get("lenght", 0.0),
+                        record.get("Cstatus"),
+                    ]
+                )
+                pair_conn_sink.addFeature(
+                    pair_feature,
+                    QgsFeatureSink.FastInsert,
+                )
 
             feedback.pushInfo("=== SimpleConnectionJudge ===")
             feedback.pushInfo(
                 "Resumo: pares_processados={0} conexoes_geradas={1}".format(
                     processed_pairs,
                     generated_pair_connections,
+                )
+            )
+            feedback.pushInfo(
+                "Cstatus: normal={0} duplicated F={1} duplicated M={2} duplicated A={3}".format(
+                    cstatus_summary.get("normal", 0),
+                    cstatus_summary.get("duplicated F", 0),
+                    cstatus_summary.get("duplicated M", 0),
+                    cstatus_summary.get("duplicated A", 0),
                 )
             )
         else:

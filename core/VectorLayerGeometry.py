@@ -180,6 +180,15 @@ class VectorLayerGeometry:
         return cleaned_attributes
 
     @staticmethod
+    def calculate_geometry_length(geometry):
+        """
+        Calcula o comprimento de uma geometria com protecao para nulos.
+        """
+        if geometry is None or geometry.isEmpty():
+            return 0.0
+        return geometry.length()
+
+    @staticmethod
     def get_most_common_target_by_key(layer_or_features, key_attr_name, target_attr_name):
         """
         Agrupa feicoes por um atributo-chave e retorna o valor mais frequente
@@ -342,9 +351,10 @@ class VectorLayerGeometry:
 
             if vertex_record["keySec"] != current_key_sec:
                 if len(current_points) >= 2:
+                    segment_geometry = QgsGeometry.fromPolylineXY(current_points)
                     segment_records.append(
                         {
-                            "geometry": QgsGeometry.fromPolylineXY(current_points),
+                            "geometry": segment_geometry,
                             "keySec": current_key_sec,
                             "vertex_keys": list(current_vertex_keys),
                             "attributes": original_attrs
@@ -353,6 +363,9 @@ class VectorLayerGeometry:
                                 current_key_sec,
                                 current_neighbor_e,
                                 current_neighbor_d,
+                                VectorLayerGeometry.calculate_geometry_length(
+                                    segment_geometry
+                                ),
                             ],
                         }
                     )
@@ -370,9 +383,10 @@ class VectorLayerGeometry:
             current_vertex_keys.append(vertex_record["keyVertex"])
 
         if len(current_points) >= 2:
+            segment_geometry = QgsGeometry.fromPolylineXY(current_points)
             segment_records.append(
                 {
-                    "geometry": QgsGeometry.fromPolylineXY(current_points),
+                    "geometry": segment_geometry,
                     "keySec": current_key_sec,
                     "vertex_keys": list(current_vertex_keys),
                     "attributes": original_attrs
@@ -381,6 +395,9 @@ class VectorLayerGeometry:
                         current_key_sec,
                         current_neighbor_e,
                         current_neighbor_d,
+                        VectorLayerGeometry.calculate_geometry_length(
+                            segment_geometry
+                        ),
                     ],
                 }
             )
