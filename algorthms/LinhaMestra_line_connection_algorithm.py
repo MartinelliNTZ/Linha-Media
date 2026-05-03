@@ -109,17 +109,50 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         return summary
 
     @staticmethod
+    def _connection_crosses_standardized_layer(
+        connection_geometry,
+        standardized_spatial_index,
+        standardized_feat_dict,
+    ):
+        if (
+            connection_geometry is None
+            or connection_geometry.isEmpty()
+            or standardized_spatial_index is None
+            or standardized_feat_dict is None
+        ):
+            return False
+
+        for candidate_id in standardized_spatial_index.intersects(
+            connection_geometry.boundingBox()
+        ):
+            candidate_feature = standardized_feat_dict.get(candidate_id)
+            if candidate_feature is None:
+                continue
+
+            candidate_geometry = candidate_feature.geometry()
+            if candidate_geometry is None or candidate_geometry.isEmpty():
+                continue
+
+            if connection_geometry.crosses(candidate_geometry):
+                return True
+
+        return False
+
+    @staticmethod
     def _classify_pair_connection_final(
         connection_records,
         orphan_vertex_key,
         pts_per_vtx,
+        standardized_spatial_index,
+        standardized_feat_dict,
     ):
         max_valid_per_vertex = max(int(pts_per_vtx or 1), 1)
         grouped_by_father_vertex = {}
         grouped_by_mother_vertex = {}
         summary = {
             "valid": 0,
-            "invalid": 0,
+            "maxVertex": 0,
+            "transpose": 0,
         }
         record_positions = {
             id(record): index for index, record in enumerate(connection_records)
@@ -141,10 +174,18 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
         valid_by_father = set()
         valid_by_mother = set()
+        transposed_connections = set()
 
         for record in connection_records:
             father_key = normalized_vertex_key(record, "vtxKeyFather")
             mother_key = normalized_vertex_key(record, "vtxKeyMother")
+
+            if LinhaMestraLineConnectionAlgorithm._connection_crosses_standardized_layer(
+                record.get("geom"),
+                standardized_spatial_index,
+                standardized_feat_dict,
+            ):
+                transposed_connections.add(id(record))
 
             if father_key is None:
                 valid_by_father.add(id(record))
@@ -171,12 +212,17 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                     valid_by_mother.add(id(record))
 
         for record in connection_records:
-            if id(record) in valid_by_father and id(record) in valid_by_mother:
+            record_id = id(record)
+
+            if record_id in transposed_connections:
+                record["Final"] = "transpose"
+                summary["transpose"] += 1
+            elif record_id in valid_by_father and record_id in valid_by_mother:
                 record["Final"] = "valid"
                 summary["valid"] += 1
             else:
-                record["Final"] = "invalid"
-                summary["invalid"] += 1
+                record["Final"] = "maxVertex"
+                summary["maxVertex"] += 1
 
         return summary
 
@@ -712,6 +758,8 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 pair_connection_records,
                 SimpleConnectionJudge.ORPHAN_VERTEX_KEY,
                 pts_per_vtx,
+                secondary_spatial_index,
+                secondary_feat_dict,
             )
             generated_pair_connections = len(pair_connection_records)
 
@@ -753,10 +801,11 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 )
             )
             feedback.pushInfo(
-                "Final (pts_por_vtx={0}, father+mother): valid={1} invalid={2}".format(
+                "Final (pts_por_vtx={0}, father+mother): valid={1} maxVertex={2} transpose={3}".format(
                     pts_per_vtx,
                     final_summary.get("valid", 0),
-                    final_summary.get("invalid", 0),
+                    final_summary.get("maxVertex", 0),
+                    final_summary.get("transpose", 0),
                 )
             )
         else:
