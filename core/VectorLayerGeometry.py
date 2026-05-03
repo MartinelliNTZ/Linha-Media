@@ -334,6 +334,7 @@ class VectorLayerGeometry:
         current_neighbor_e = vertex_records[0]["neighborE"]
         current_neighbor_d = vertex_records[0]["neighborD"]
         current_points = [QgsPointXY(points[0].x(), points[0].y())]
+        current_vertex_keys = [vertex_records[0]["keyVertex"]]
 
         for index in range(1, len(points)):
             point = QgsPointXY(points[index].x(), points[index].y())
@@ -344,6 +345,8 @@ class VectorLayerGeometry:
                     segment_records.append(
                         {
                             "geometry": QgsGeometry.fromPolylineXY(current_points),
+                            "keySec": current_key_sec,
+                            "vertex_keys": list(current_vertex_keys),
                             "attributes": original_attrs
                             + [
                                 key,
@@ -355,18 +358,23 @@ class VectorLayerGeometry:
                     )
 
                 previous_point = QgsPointXY(points[index - 1].x(), points[index - 1].y())
+                previous_vertex_key = vertex_records[index - 1]["keyVertex"]
                 current_points = [previous_point, point]
+                current_vertex_keys = [previous_vertex_key, vertex_record["keyVertex"]]
                 current_key_sec = vertex_record["keySec"]
                 current_neighbor_e = vertex_record["neighborE"]
                 current_neighbor_d = vertex_record["neighborD"]
                 continue
 
             current_points.append(point)
+            current_vertex_keys.append(vertex_record["keyVertex"])
 
         if len(current_points) >= 2:
             segment_records.append(
                 {
                     "geometry": QgsGeometry.fromPolylineXY(current_points),
+                    "keySec": current_key_sec,
+                    "vertex_keys": list(current_vertex_keys),
                     "attributes": original_attrs
                     + [
                         key,

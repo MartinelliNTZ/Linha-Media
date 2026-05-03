@@ -204,6 +204,8 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         pair_conn_fields.append(QgsField("id_conexao", QVariant.Int))
         pair_conn_fields.append(QgsField("keyFather", QVariant.String))
         pair_conn_fields.append(QgsField("keyMother", QVariant.String))
+        pair_conn_fields.append(QgsField("vtxKeyFather", QVariant.String))
+        pair_conn_fields.append(QgsField("vtxKeyMother", QVariant.String))
 
         (pair_conn_sink, pair_conn_dest_id) = self.parameterAsSink(
             parameters,
@@ -240,6 +242,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         secondary_segment_features = []
         secondary_sensor_features = []
         secondary_segment_id = 0
+        segment_vertex_keys_by_keysec = {}
 
         for current, standardized_record in enumerate(standardized_records):
             if feedback.isCanceled():
@@ -292,6 +295,12 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 perp_sink.addFeature(sensor_feature, QgsFeatureSink.FastInsert)
 
             for segment_record in segment_records:
+                key_sec = segment_record.get("keySec")
+                if key_sec not in (None, ""):
+                    segment_vertex_keys_by_keysec[str(key_sec)] = list(
+                        segment_record.get("vertex_keys") or []
+                    )
+
                 secondary_feature = QgsFeature(output_fields)
                 secondary_feature.setId(secondary_segment_id)
                 secondary_feature.setGeometry(segment_record["geometry"])
@@ -518,11 +527,21 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
                     processed_pairs += 1
                     target_n = max(vertex_count_a - 1, vertex_count_b - 1, 1)
+                    vertex_keys_a = segment_vertex_keys_by_keysec.get(
+                        str(feat_a[secondary_key_attr]),
+                        [],
+                    )
+                    vertex_keys_b = segment_vertex_keys_by_keysec.get(
+                        str(feat_b[secondary_key_attr]),
+                        [],
+                    )
                     pair_connections = SimpleConnectionJudge.solve_nearest_with_criteria(
                         geom_a,
-                        geom_b,                        
+                        geom_b,
                         str(feat_a[secondary_key_attr]),
-                        str(feat_b[secondary_key_attr]),                        
+                        str(feat_b[secondary_key_attr]),
+                        vertex_keys_a,
+                        vertex_keys_b,
                     )
 
                     for connection in pair_connections:
@@ -535,6 +554,8 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                                 connection.get("id", 0),
                                 connection.get("keyFather"),
                                 connection.get("keyMother"),
+                                connection.get("vtxKeyFather"),
+                                connection.get("vtxKeyMother"),
                             ]
                         )
                         pair_conn_sink.addFeature(
