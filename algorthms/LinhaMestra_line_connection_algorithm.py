@@ -116,36 +116,67 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     ):
         max_valid_per_vertex = max(int(pts_per_vtx or 1), 1)
         grouped_by_father_vertex = {}
+        grouped_by_mother_vertex = {}
         summary = {
             "valid": 0,
             "invalid": 0,
         }
+        record_positions = {
+            id(record): index for index, record in enumerate(connection_records)
+        }
+
+        def normalized_vertex_key(record, attribute_name):
+            vertex_key = record.get(attribute_name)
+            if vertex_key in (None, "", orphan_vertex_key):
+                return None
+            return str(vertex_key)
+
+        def sort_key(record):
+            return (
+                record.get("lenght", 0.0),
+                record.get("pair_id", 0),
+                record.get("id_conexao", 0),
+                record_positions[id(record)],
+            )
+
+        valid_by_father = set()
+        valid_by_mother = set()
 
         for record in connection_records:
-            father_key = record.get("vtxKeyFather")
-            if father_key in (None, "", orphan_vertex_key):
-                record["Final"] = "valid"
-                summary["valid"] += 1
-                continue
+            father_key = normalized_vertex_key(record, "vtxKeyFather")
+            mother_key = normalized_vertex_key(record, "vtxKeyMother")
 
-            grouped_by_father_vertex.setdefault(str(father_key), []).append(record)
+            if father_key is None:
+                valid_by_father.add(id(record))
+            else:
+                grouped_by_father_vertex.setdefault(father_key, []).append(record)
+
+            if mother_key is None:
+                valid_by_mother.add(id(record))
+            else:
+                grouped_by_mother_vertex.setdefault(mother_key, []).append(record)
 
         for grouped_records in grouped_by_father_vertex.values():
-            grouped_records.sort(
-                key=lambda record: (
-                    record.get("lenght", 0.0),
-                    record.get("pair_id", 0),
-                    record.get("id_conexao", 0),
-                )
-            )
+            grouped_records.sort(key=sort_key)
 
             for index, record in enumerate(grouped_records):
                 if index < max_valid_per_vertex:
-                    record["Final"] = "valid"
-                    summary["valid"] += 1
-                else:
-                    record["Final"] = "invalid"
-                    summary["invalid"] += 1
+                    valid_by_father.add(id(record))
+
+        for grouped_records in grouped_by_mother_vertex.values():
+            grouped_records.sort(key=sort_key)
+
+            for index, record in enumerate(grouped_records):
+                if index < max_valid_per_vertex:
+                    valid_by_mother.add(id(record))
+
+        for record in connection_records:
+            if id(record) in valid_by_father and id(record) in valid_by_mother:
+                record["Final"] = "valid"
+                summary["valid"] += 1
+            else:
+                record["Final"] = "invalid"
+                summary["invalid"] += 1
 
         return summary
 
@@ -722,7 +753,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 )
             )
             feedback.pushInfo(
-                "Final (pts_por_vtx={0}): valid={1} invalid={2}".format(
+                "Final (pts_por_vtx={0}, father+mother): valid={1} invalid={2}".format(
                     pts_per_vtx,
                     final_summary.get("valid", 0),
                     final_summary.get("invalid", 0),
