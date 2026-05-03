@@ -26,6 +26,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
     SENSOR_LIMIT = "SENSOR_LIMIT"
     SPACING = "SPACING"
     MIN_SEGMENT = "MIN_SEGMENT"
+    PTS_PER_VTX = "PTS_PER_VTX"
     OUTPUT = "OUTPUT"
     PERP_OUTPUT = "PERP_OUTPUT"
     SEC_PERP_OUTPUT = "SEC_PERP_OUTPUT"
@@ -107,6 +108,47 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
         return summary
 
+    @staticmethod
+    def _classify_pair_connection_final(
+        connection_records,
+        orphan_vertex_key,
+        pts_per_vtx,
+    ):
+        max_valid_per_vertex = max(int(pts_per_vtx or 1), 1)
+        grouped_by_father_vertex = {}
+        summary = {
+            "valid": 0,
+            "invalid": 0,
+        }
+
+        for record in connection_records:
+            father_key = record.get("vtxKeyFather")
+            if father_key in (None, "", orphan_vertex_key):
+                record["Final"] = "valid"
+                summary["valid"] += 1
+                continue
+
+            grouped_by_father_vertex.setdefault(str(father_key), []).append(record)
+
+        for grouped_records in grouped_by_father_vertex.values():
+            grouped_records.sort(
+                key=lambda record: (
+                    record.get("lenght", 0.0),
+                    record.get("pair_id", 0),
+                    record.get("id_conexao", 0),
+                )
+            )
+
+            for index, record in enumerate(grouped_records):
+                if index < max_valid_per_vertex:
+                    record["Final"] = "valid"
+                    summary["valid"] += 1
+                else:
+                    record["Final"] = "invalid"
+                    summary["invalid"] += 1
+
+        return summary
+
     def initAlgorithm(self, config=None):
         self.addParameter(
             QgsProcessingParameterFeatureSource(
@@ -145,6 +187,16 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         )
 
         self.addParameter(
+            QgsProcessingParameterNumber(
+                self.PTS_PER_VTX,
+                self.tr("Pts por Vtx"),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=2,
+                minValue=1,
+            )
+        )
+
+        self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT, self.tr("Camada Padronizada (Spacing)")
             )
@@ -178,6 +230,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
         spacing = self.parameterAsDouble(parameters, self.SPACING, context)
         min_segment = self.parameterAsInt(parameters, self.MIN_SEGMENT, context)
+        pts_per_vtx = self.parameterAsInt(parameters, self.PTS_PER_VTX, context)
         primary_key_attr = "key_prim"
         secondary_key_attr = "keySec"
 
@@ -261,6 +314,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         pair_conn_fields.append(QgsField("vtxKeyMother", QVariant.String))
         pair_conn_fields.append(QgsField("lenght", QVariant.Double))
         pair_conn_fields.append(QgsField("Cstatus", QVariant.String))
+        pair_conn_fields.append(QgsField("Final", QVariant.String))
 
         (pair_conn_sink, pair_conn_dest_id) = self.parameterAsSink(
             parameters,
@@ -614,6 +668,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                                     connection_geom
                                 ),
                                 "Cstatus": None,
+                                "Final": None,
                                 "geom": connection_geom,
                             }
                         )
@@ -621,6 +676,11 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             cstatus_summary = self._classify_pair_connection_statuses(
                 pair_connection_records,
                 SimpleConnectionJudge.ORPHAN_VERTEX_KEY,
+            )
+            final_summary = self._classify_pair_connection_final(
+                pair_connection_records,
+                SimpleConnectionJudge.ORPHAN_VERTEX_KEY,
+                pts_per_vtx,
             )
             generated_pair_connections = len(pair_connection_records)
 
@@ -638,6 +698,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                         record.get("vtxKeyMother"),
                         record.get("lenght", 0.0),
                         record.get("Cstatus"),
+                        record.get("Final"),
                     ]
                 )
                 pair_conn_sink.addFeature(
@@ -658,6 +719,13 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                     cstatus_summary.get("duplicated F", 0),
                     cstatus_summary.get("duplicated M", 0),
                     cstatus_summary.get("duplicated A", 0),
+                )
+            )
+            feedback.pushInfo(
+                "Final (pts_por_vtx={0}): valid={1} invalid={2}".format(
+                    pts_per_vtx,
+                    final_summary.get("valid", 0),
+                    final_summary.get("invalid", 0),
                 )
             )
         else:
