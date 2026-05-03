@@ -22,6 +22,7 @@ from ..core.VectorLayerGeometry import VectorLayerGeometry
 
 
 class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
+    TRANSPOSE_TRIM_DISTANCE = 0.5
     INPUT = "INPUT"
     SENSOR_LIMIT = "SENSOR_LIMIT"
     SPACING = "SPACING"
@@ -122,8 +123,26 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         ):
             return False
 
+        if (
+            VectorLayerGeometry.calculate_geometry_length(connection_geometry)
+            <= LinhaMestraLineConnectionAlgorithm.TRANSPOSE_TRIM_DISTANCE * 2
+        ):
+            return False
+
+        trimmed_connection_geometry = VectorLayerGeometry.adjust_line_length(
+            connection_geometry,
+            -LinhaMestraLineConnectionAlgorithm.TRANSPOSE_TRIM_DISTANCE,
+        )
+        if (
+            trimmed_connection_geometry is None
+            or trimmed_connection_geometry.isEmpty()
+            or VectorLayerGeometry.calculate_geometry_length(trimmed_connection_geometry)
+            <= 0
+        ):
+            return False
+
         for candidate_id in standardized_spatial_index.intersects(
-            connection_geometry.boundingBox()
+            trimmed_connection_geometry.boundingBox()
         ):
             candidate_feature = standardized_feat_dict.get(candidate_id)
             if candidate_feature is None:
@@ -133,7 +152,7 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             if candidate_geometry is None or candidate_geometry.isEmpty():
                 continue
 
-            if connection_geometry.crosses(candidate_geometry):
+            if trimmed_connection_geometry.crosses(candidate_geometry):
                 return True
 
         return False
