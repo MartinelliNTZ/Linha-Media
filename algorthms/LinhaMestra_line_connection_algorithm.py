@@ -12,6 +12,7 @@ from qgis.core import (
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterNumber,
+    QgsSpatialIndex,
     QgsVectorLayer,
     QgsWkbTypes,
 )
@@ -110,6 +111,80 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         return summary
 
     @staticmethod
+    def _pair_connection_sort_key(record, record_positions):
+        return (
+            record.get("lenght", 0.0),
+            record.get("pair_id", 0),
+            record.get("id_conexao", 0),
+            record_positions[id(record)],
+        )
+
+    @staticmethod
+    def _apply_crossing_filter_to_valid_connections(
+        connection_records,
+        record_positions,
+    ):
+        valid_records = [
+            record
+            for record in connection_records
+            if record.get("Final") == "valid"
+            and record.get("geom") is not None
+            and not record.get("geom").isEmpty()
+        ]
+        if len(valid_records) < 2:
+            return
+
+        crossing_index = QgsSpatialIndex()
+        valid_record_by_index = {}
+
+        for feature_id, record in enumerate(valid_records):
+            feature = QgsFeature()
+            feature.setId(feature_id)
+            feature.setGeometry(record["geom"])
+            crossing_index.addFeature(feature)
+            valid_record_by_index[feature_id] = record
+
+        records_to_mark_x = set()
+
+        for feature_id, record in enumerate(valid_records):
+            geometry = record["geom"]
+
+            for candidate_id in crossing_index.intersects(geometry.boundingBox()):
+                if candidate_id <= feature_id:
+                    continue
+
+                candidate_record = valid_record_by_index.get(candidate_id)
+                if candidate_record is None:
+                    continue
+
+                candidate_geometry = candidate_record.get("geom")
+                if candidate_geometry is None or candidate_geometry.isEmpty():
+                    continue
+
+                if not geometry.crosses(candidate_geometry):
+                    continue
+
+                record_key = LinhaMestraLineConnectionAlgorithm._pair_connection_sort_key(
+                    record,
+                    record_positions,
+                )
+                candidate_key = (
+                    LinhaMestraLineConnectionAlgorithm._pair_connection_sort_key(
+                        candidate_record,
+                        record_positions,
+                    )
+                )
+
+                if record_key <= candidate_key:
+                    records_to_mark_x.add(id(candidate_record))
+                else:
+                    records_to_mark_x.add(id(record))
+
+        for record in valid_records:
+            if id(record) in records_to_mark_x:
+                record["Final"] = "x"
+
+    @staticmethod
     def _connection_crosses_standardized_layer(
         connection_geometry,
         standardized_spatial_index,
@@ -168,11 +243,6 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
         max_valid_per_vertex = max(int(pts_per_vtx or 1), 1)
         grouped_by_father_vertex = {}
         grouped_by_mother_vertex = {}
-        summary = {
-            "valid": 0,
-            "maxVertex": 0,
-            "transpose": 0,
-        }
         record_positions = {
             id(record): index for index, record in enumerate(connection_records)
         }
@@ -182,14 +252,6 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
             if vertex_key in (None, "", orphan_vertex_key):
                 return None
             return str(vertex_key)
-
-        def sort_key(record):
-            return (
-                record.get("lenght", 0.0),
-                record.get("pair_id", 0),
-                record.get("id_conexao", 0),
-                record_positions[id(record)],
-            )
 
         valid_by_father = set()
         valid_by_mother = set()
@@ -217,14 +279,24 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 grouped_by_mother_vertex.setdefault(mother_key, []).append(record)
 
         for grouped_records in grouped_by_father_vertex.values():
-            grouped_records.sort(key=sort_key)
+            grouped_records.sort(
+                key=lambda record: LinhaMestraLineConnectionAlgorithm._pair_connection_sort_key(
+                    record,
+                    record_positions,
+                )
+            )
 
             for index, record in enumerate(grouped_records):
                 if index < max_valid_per_vertex:
                     valid_by_father.add(id(record))
 
         for grouped_records in grouped_by_mother_vertex.values():
-            grouped_records.sort(key=sort_key)
+            grouped_records.sort(
+                key=lambda record: LinhaMestraLineConnectionAlgorithm._pair_connection_sort_key(
+                    record,
+                    record_positions,
+                )
+            )
 
             for index, record in enumerate(grouped_records):
                 if index < max_valid_per_vertex:
@@ -235,13 +307,26 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
 
             if record_id in transposed_connections:
                 record["Final"] = "transpose"
-                summary["transpose"] += 1
             elif record_id in valid_by_father and record_id in valid_by_mother:
                 record["Final"] = "valid"
-                summary["valid"] += 1
             else:
                 record["Final"] = "maxVertex"
-                summary["maxVertex"] += 1
+
+        LinhaMestraLineConnectionAlgorithm._apply_crossing_filter_to_valid_connections(
+            connection_records,
+            record_positions,
+        )
+
+        summary = {
+            "valid": 0,
+            "maxVertex": 0,
+            "transpose": 0,
+            "x": 0,
+        }
+        for record in connection_records:
+            final_status = record.get("Final")
+            if final_status in summary:
+                summary[final_status] += 1
 
         return summary
 
@@ -820,11 +905,12 @@ class LinhaMestraLineConnectionAlgorithm(QgsProcessingAlgorithm):
                 )
             )
             feedback.pushInfo(
-                "Final (pts_por_vtx={0}, father+mother): valid={1} maxVertex={2} transpose={3}".format(
+                "Final (pts_por_vtx={0}, father+mother): valid={1} maxVertex={2} transpose={3} x={4}".format(
                     pts_per_vtx,
                     final_summary.get("valid", 0),
                     final_summary.get("maxVertex", 0),
                     final_summary.get("transpose", 0),
+                    final_summary.get("x", 0),
                 )
             )
         else:
