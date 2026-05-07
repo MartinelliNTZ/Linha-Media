@@ -34,6 +34,7 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
     SEC_PERP_OUTPUT = "SEC_PERP_OUTPUT"
     VERT_OUTPUT = "VERT_OUTPUT"
     PAIR_CONN_OUTPUT = "PAIR_CONN_OUTPUT"
+    LIMITE_OUTPUT = "LIMITE_OUTPUT"
     EXTENSAO = "EXTENSAO"
     POLYGON_INPUT = "POLYGON_INPUT"
 
@@ -426,6 +427,14 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
             )
         )
 
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.LIMITE_OUTPUT,
+                self.tr("Limite (borda dos polígonos)"),
+                QgsProcessing.TypeVectorLine,
+            )
+        )
+
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
@@ -440,6 +449,115 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
         if source is None:
             raise QgsProcessingException(self.tr("Camada de entrada inválida."))
 
+        # --- ETAPA 2: LIMITE (borda dos polígonos em linha) + estender pontas ---
+        limite_fields = QgsFields()
+        limite_fields.append(QgsField("id", QVariant.Int))
+
+        (limite_sink, limite_dest_id) = self.parameterAsSink(
+            parameters,
+            self.LIMITE_OUTPUT,
+            context,
+            limite_fields,
+            QgsWkbTypes.LineString,
+            source.sourceCrs(),
+        )
+
+        limite_geoms = []
+        if polygon_source is not None:
+            for poly_feat in polygon_source.getFeatures():
+                poly_geom = poly_feat.geometry()
+                if poly_geom and not poly_geom.isEmpty():
+                    polygon_parts = poly_geom.asPolygon()
+                    if polygon_parts:
+                        exterior_ring = polygon_parts[0]
+                        if len(exterior_ring) >= 2:
+                            line_geom = QgsGeometry.fromPolylineXY(exterior_ring)
+                            limite_geoms.append(line_geom)
+                            feat = QgsFeature(limite_fields)
+                            feat.setGeometry(line_geom)
+                            feat.setAttributes([len(limite_geoms) - 1])
+                            limite_sink.addFeature(feat, QgsFeatureSink.FastInsert)
+
+        source_features_raw = list(source.getFeatures())
+
+        if limite_geoms and extensao > 0:
+            limite_index = QgsSpatialIndex()
+            for i, geom in enumerate(limite_geoms):
+                temp_feat = QgsFeature()
+                temp_feat.setId(i)
+                temp_feat.setGeometry(geom)
+                limite_index.addFeature(temp_feat)
+
+            source_features = []
+            for feat in source_features_raw:
+                geom = feat.geometry()
+                if not geom or geom.isEmpty():
+                    source_features.append(feat)
+                    continue
+
+                if geom.isMultipart():
+                    polyline = geom.asMultiPolyline()[0] if geom.asMultiPolyline() else []
+                else:
+                    polyline = geom.asPolyline() if geom.asPolyline() else []
+
+                if len(polyline) < 2:
+                    source_features.append(feat)
+                    continue
+
+                pts = list(polyline)
+                modified = False
+
+                # Ponto inicial
+                start_pt = pts[0]
+                pt_geom = QgsGeometry.fromPointXY(start_pt)
+                search_box = pt_geom.buffer(extensao, 8).boundingBox()
+                candidate_ids = limite_index.intersects(search_box)
+
+                nearest_pt = None
+                min_dist = extensao
+                for cid in candidate_ids:
+                    dist = limite_geoms[cid].distance(pt_geom)
+                    if dist < min_dist:
+                        min_dist = dist
+                        nearest_pt = limite_geoms[cid].nearestPoint(pt_geom)
+
+                if nearest_pt is not None and not nearest_pt.isEmpty():
+                    pts[0] = nearest_pt.asPoint()
+                    modified = True
+                    feedback.pushInfo("Estendido inicio linha {0} (dist={1:.2f})".format(
+                        len(source_features), min_dist))
+
+                # Ponto final
+                end_pt = pts[-1]
+                pt_geom = QgsGeometry.fromPointXY(end_pt)
+                search_box = pt_geom.buffer(extensao, 8).boundingBox()
+                candidate_ids = limite_index.intersects(search_box)
+
+                nearest_pt = None
+                min_dist = extensao
+                for cid in candidate_ids:
+                    dist = limite_geoms[cid].distance(pt_geom)
+                    if dist < min_dist:
+                        min_dist = dist
+                        nearest_pt = limite_geoms[cid].nearestPoint(pt_geom)
+
+                if nearest_pt is not None and not nearest_pt.isEmpty():
+                    pts[-1] = nearest_pt.asPoint()
+                    modified = True
+                    feedback.pushInfo("Estendido final linha {0} (dist={1:.2f})".format(
+                        len(source_features), min_dist))
+
+                if modified:
+                    new_geom = QgsGeometry.fromPolylineXY(pts)
+                    feat.setGeometry(new_geom)
+
+                source_features.append(feat)
+        else:
+            source_features = source_features_raw
+
+        feedback.pushInfo("--- Fim ETAPA 2 ---")
+
+        # --- ETAPA 3 em diante (fluxo normal) ---
         temp_fields = source.fields()
         temp_fields.append(QgsField(primary_key_attr, QVariant.String))
 
@@ -528,7 +646,6 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
             source.sourceCrs(),
         )
 
-        source_features = list(source.getFeatures())
         standardized_records = []
         standardized_features = []
 
@@ -946,4 +1063,5 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
             self.SEC_PERP_OUTPUT: sec_perp_dest_id,
             self.VERT_OUTPUT: vert_dest_id,
             self.PAIR_CONN_OUTPUT: pair_conn_dest_id,
+            self.LIMITE_OUTPUT: limite_dest_id,
         }

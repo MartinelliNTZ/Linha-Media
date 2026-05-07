@@ -12,26 +12,31 @@
 ## Etapas
 
 1. INPUT [linhas]
- Tranformar borda do poligono em linha LIMITE - OUTPUT
-MEDIR A DISTANCIA DE TODAS AS PONTAS DA INPUT ATE O PONTO MAIS PROXIMO do limite
-ver qual pontas estao a menos do que a EXTENSAO de distancia, 
-extender pontas menores que (EXTENSAO) usar a distancia do limite como valor de extensaoja foi calculado da praa usa
-segue demais passos
-3. SPACING [padronizar linhas]
-4. SENSOR_LIMIT [gerar perpendiculares]
-5. Vizinhança [cortar sensores]
-6. Vértices [agrupar vizinhos]
-7. keySec [segmentar vértices]
-8. MIN_SEGMENT [corrigir grupos pequenos]
-9. Particionar [dividir linhas]
-10. Sensores Secundários [gerar por segmento]
-11. MatchJudge [validar pares]
-12. SimpleConnection [conectar segmentos]
+2. EXTENSAO + POLYGON_INPUT [LIMITE borda polígono]
+3. EXTENSAO + LIMITE [medir pontas até borda]
+4. EXTENSAO + LIMITE [estender pontas < EXTENSAO]
+5. SPACING [padronizar linhas]
+6. SENSOR_LIMIT [perpendiculares primários]
+7. Vizinhança [cortar sensores]
+8. Vértices [agrupar vizinhos E/D]
+9. keySec [segmentar por vizinhança]
+10. MIN_SEGMENT [corrigir grupos pequenos]
+11. Particionar [dividir linhas por keySec]
+12. keySec (2) [índice espacial segmentos]
+13. Sensores Secundários [perpendiculares por segmento]
+14. Votos vizinhos [moda E e D por segmento]
+15. Output + MatchJudge [alimentar camada julgamento]
+16. MatchJudge [pares válidos e inválidos]
+17. SimpleConnection [conectar geometrias]
+18. Classificar Cstatus [normal/duplicado]
+19. Classificar Final [valid/maxVertex/transpose/x]
+20. PAIR_CONN_OUTPUT [conexões finais]
 
 ## Produtos
 
-- OUTPUT [linhas padronizadas]
+- LIMITE_OUTPUT [bordas polígono em linha]
+- OUTPUT [linhas padronizadas segmentadas]
 - PERP_OUTPUT [sensores primários]
-- VERT_OUTPUT [vértices]
+- VERT_OUTPUT [vértices agrupados]
 - SEC_PERP_OUTPUT [sensores secundários]
 - PAIR_CONN_OUTPUT [conexões por par]
