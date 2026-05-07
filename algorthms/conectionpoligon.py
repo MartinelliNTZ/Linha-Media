@@ -34,6 +34,8 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
     SEC_PERP_OUTPUT = "SEC_PERP_OUTPUT"
     VERT_OUTPUT = "VERT_OUTPUT"
     PAIR_CONN_OUTPUT = "PAIR_CONN_OUTPUT"
+    EXTENSAO = "EXTENSAO"
+    POLYGON_INPUT = "POLYGON_INPUT"
 
     def tr(self, string):
         return QCoreApplication.translate("Processing", string)
@@ -406,12 +408,32 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
             )
         )
 
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.EXTENSAO,
+                self.tr("Extensao"),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=30.0,
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterFeatureSource(
+                self.POLYGON_INPUT,
+                self.tr("Camada de Polígonos de Entrada"),
+                [QgsProcessing.TypeVectorPolygon],
+                optional=True,
+            )
+        )
+
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
         sensor_limit = self.parameterAsInt(parameters, self.SENSOR_LIMIT, context)
         spacing = self.parameterAsDouble(parameters, self.SPACING, context)
         min_segment = self.parameterAsInt(parameters, self.MIN_SEGMENT, context)
         pts_per_vtx = self.parameterAsInt(parameters, self.PTS_PER_VTX, context)
+        extensao = self.parameterAsDouble(parameters, self.EXTENSAO, context)
+        polygon_source = self.parameterAsSource(parameters, self.POLYGON_INPUT, context)
         primary_key_attr = "key_prim"
         secondary_key_attr = "keySec"
 
