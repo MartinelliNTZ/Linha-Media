@@ -423,7 +423,7 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
                 self.POLYGON_INPUT,
                 self.tr("Camada de Polígonos de Entrada"),
                 [QgsProcessing.TypeVectorPolygon],
-                optional=True,
+                optional=False,
             )
         )
 
@@ -524,8 +524,6 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
                 if nearest_pt is not None and not nearest_pt.isEmpty():
                     pts[0] = nearest_pt.asPoint()
                     modified = True
-                    feedback.pushInfo("Estendido inicio linha {0} (dist={1:.2f})".format(
-                        len(source_features), min_dist))
 
                 # Ponto final
                 end_pt = pts[-1]
@@ -544,8 +542,6 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
                 if nearest_pt is not None and not nearest_pt.isEmpty():
                     pts[-1] = nearest_pt.asPoint()
                     modified = True
-                    feedback.pushInfo("Estendido final linha {0} (dist={1:.2f})".format(
-                        len(source_features), min_dist))
 
                 if modified:
                     new_geom = QgsGeometry.fromPolylineXY(pts)
@@ -567,6 +563,7 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
         output_fields.append(QgsField("neighborE", QVariant.String))
         output_fields.append(QgsField("neighborD", QVariant.String))
         output_fields.append(QgsField("lenght", QVariant.Double))
+        output_fields.append(QgsField("is_limite", QVariant.Int))
 
         perp_fields = QgsFields()
         perp_fields.append(QgsField(primary_key_attr, QVariant.String))
@@ -646,6 +643,12 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
             source.sourceCrs(),
         )
 
+        standard_key_prim_offset = 100000
+        limite_feature_id_offset = 900000
+        output_field_names = output_fields.names()
+        is_limite_index = output_field_names.index("is_limite")
+
+        # Criar features padronizadas para INPUT
         standardized_records = []
         standardized_features = []
 
@@ -655,7 +658,39 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
                 feature, spacing, temp_fields, key=key_prim
             )
             standardized_records.append(standardized_record)
-            standardized_features.append(standardized_record["feature"])
+            # Ajustar ID para nao conflitar com LIMITE
+            std_feat = standardized_record["feature"]
+            std_feat.setId(standard_key_prim_offset + current)
+            standardized_features.append(std_feat)
+
+        # --- LIMITE entra no índice espacial primário (detectável, mas não gera sensores) ---
+        # Padronizar espaçamento do LIMITE igual ao INPUT
+        limite_temp_features = []
+        for i, geom in enumerate(limite_geoms):
+            key_prim_limite = f"L{i:04d}"
+
+            # Criar feature temporária com a geometria bruta para padronizar
+            raw_feat = QgsFeature()
+            raw_feat.setGeometry(geom)
+
+            # Padronizar com mesmo spacing do INPUT
+            std_limite = VectorLayerGeometry.standardize_line_feature(
+                raw_feat, spacing, temp_fields, key=key_prim_limite
+            )
+            std_feat = std_limite["feature"]
+            std_feat.setId(limite_feature_id_offset + i)
+            standardized_features.append(std_feat)
+
+            # Criar feature com output_fields para o índice secundário e MatchJudge
+            out_feat = QgsFeature(output_fields)
+            out_feat.setId(limite_feature_id_offset + i)
+            out_feat.setGeometry(std_limite["geometry"])
+            out_attrs = [None] * len(output_fields)
+            out_attrs[output_field_names.index(primary_key_attr)] = key_prim_limite
+            out_attrs[output_field_names.index(secondary_key_attr)] = key_prim_limite
+            out_attrs[is_limite_index] = 1
+            out_feat.setAttributes(out_attrs)
+            limite_temp_features.append(out_feat)
 
         (
             spatial_index,
@@ -672,6 +707,9 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
         secondary_sensor_features = []
         secondary_segment_id = 0
         segment_vertex_keys_by_keysec = {}
+
+        # --- SENSORES PRIMÁRIOS: só para INPUT, não para LIMITE ---
+        # LIMITE não gera sensores, mas está no índice para ser detectada
 
         for current, standardized_record in enumerate(standardized_records):
             if feedback.isCanceled():
@@ -730,10 +768,16 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
                         segment_record.get("vertex_keys") or []
                     )
 
+                seg_attrs = list(segment_record["attributes"])
+                # Garantir que is_limite seja 0 (não está nos atributos originais)
+                while len(seg_attrs) < len(output_fields):
+                    seg_attrs.append(0)
+                if is_limite_index < len(seg_attrs):
+                    seg_attrs[is_limite_index] = 0
                 secondary_feature = QgsFeature(output_fields)
                 secondary_feature.setId(secondary_segment_id)
                 secondary_feature.setGeometry(segment_record["geometry"])
-                secondary_feature.setAttributes(segment_record["attributes"])
+                secondary_feature.setAttributes(seg_attrs)
                 secondary_segment_features.append(secondary_feature)
                 secondary_segment_id += 1
 
@@ -755,14 +799,19 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
 
             feedback.setProgress(int(current * total))
 
+        # --- ÍNDICE SECUNDÁRIO: segmentos + LIMITE ---
+        secondary_all_features = list(secondary_segment_features)
+        secondary_all_features.extend(limite_temp_features)
+
         (
             secondary_spatial_index,
             secondary_feat_dict,
             fid_to_secondary_key,
         ) = VectorLayerGeometry.create_spatial_context(
-            secondary_segment_features, secondary_key_attr
+            secondary_all_features, secondary_key_attr
         )
 
+        # --- SENSORES SECUNDÁRIOS: só para segmentos, não para LIMITE ---
         for segment_feature in secondary_segment_features:
             segment_points = [
                 point for point in segment_feature.geometry().vertices()
@@ -822,9 +871,9 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
             secondary_sensor_features_d, secondary_key_attr, "neighbor"
         )
 
-        output_field_names = output_fields.names()
         neighbor_e_index = output_field_names.index("neighborE")
         neighbor_d_index = output_field_names.index("neighborD")
+
         judge_layer = QgsVectorLayer("MultiLineString", "match_judge_preview", "memory")
         judge_features = []
 
@@ -844,6 +893,7 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
             key_sec = segment_feature[secondary_key_attr]
             output_attributes[neighbor_e_index] = neighbor_e_by_keysec.get(key_sec)
             output_attributes[neighbor_d_index] = neighbor_d_by_keysec.get(key_sec)
+            output_attributes[is_limite_index] = 0
 
             output_feature = QgsFeature(output_fields)
             output_feature.setGeometry(segment_feature.geometry())
@@ -864,6 +914,22 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
                     )
                 judge_feature.setAttributes(output_attributes)
                 judge_features.append(judge_feature)
+
+        # --- LIMITE também entra na camada do MatchJudge (keySec = key_prim para match) ---
+        for limite_feat in limite_temp_features:
+            limit_attrs = [None] * len(output_fields)
+            key_prim_limite = limite_feat[primary_key_attr]
+            if primary_key_attr in output_field_names:
+                limit_attrs[output_field_names.index(primary_key_attr)] = key_prim_limite
+            if secondary_key_attr in output_field_names:
+                limit_attrs[output_field_names.index(secondary_key_attr)] = key_prim_limite
+            if is_limite_index >= 0:
+                limit_attrs[is_limite_index] = 1
+
+            judge_feature = QgsFeature(judge_layer.fields())
+            judge_feature.setGeometry(limite_feat.geometry())
+            judge_feature.setAttributes(limit_attrs)
+            judge_features.append(judge_feature)
 
         if judge_layer.isValid():
             judge_layer.dataProvider().addFeatures(judge_features)
@@ -914,19 +980,37 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
                         )
                         continue
 
-                    order_a = (
-                        str(feat_a[primary_key_attr] or ""),
-                        str(feat_a[secondary_key_attr] or ""),
-                    )
-                    order_b = (
-                        str(feat_b[primary_key_attr] or ""),
-                        str(feat_b[secondary_key_attr] or ""),
-                    )
-                    if order_b < order_a:
-                        feat_a, feat_b = feat_b, feat_a
+                    # Garantir que LIMITE (is_limite=1) sempre seja keyMother
+                    is_limite_a = feat_a[is_limite_index] if is_limite_index >= 0 else 0
+                    is_limite_b = feat_b[is_limite_index] if is_limite_index >= 0 else 0
 
-                    geom_a = feat_a.geometry()
-                    geom_b = feat_b.geometry()
+                    if is_limite_a and not is_limite_b:
+                        # feat_a é LIMITE, feat_b é segmento -> feat_a mãe
+                        mother_feat = feat_a
+                        father_feat = feat_b
+                    elif is_limite_b and not is_limite_a:
+                        # feat_b é LIMITE, feat_a é segmento -> feat_b mãe
+                        mother_feat = feat_b
+                        father_feat = feat_a
+                    else:
+                        # Ambos são segmentos ou ambos LIMITE -> ordem normal
+                        order_a = (
+                            str(feat_a[primary_key_attr] or ""),
+                            str(feat_a[secondary_key_attr] or ""),
+                        )
+                        order_b = (
+                            str(feat_b[primary_key_attr] or ""),
+                            str(feat_b[secondary_key_attr] or ""),
+                        )
+                        if order_b < order_a:
+                            mother_feat = feat_b
+                            father_feat = feat_a
+                        else:
+                            mother_feat = feat_a
+                            father_feat = feat_b
+
+                    geom_a = father_feat.geometry()
+                    geom_b = mother_feat.geometry()
                     if (
                         geom_a is None
                         or geom_b is None
@@ -936,8 +1020,8 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
                         feedback.pushInfo(
                             "SimpleConnectionJudge: par ignorado por geometria vazia "
                             "({0}, {1}).".format(
-                                feat_a[secondary_key_attr],
-                                feat_b[secondary_key_attr],
+                                father_feat[secondary_key_attr],
+                                mother_feat[secondary_key_attr],
                             )
                         )
                         continue
@@ -948,27 +1032,26 @@ class LinhaPerpendicularPoligonoAlgorithm(QgsProcessingAlgorithm):
                         feedback.pushInfo(
                             "SimpleConnectionJudge: par ignorado por possuir menos de 2 "
                             "vertices ({0}, {1}).".format(
-                                feat_a[secondary_key_attr],
-                                feat_b[secondary_key_attr],
+                                father_feat[secondary_key_attr],
+                                mother_feat[secondary_key_attr],
                             )
                         )
                         continue
 
                     processed_pairs += 1
-                    target_n = max(vertex_count_a - 1, vertex_count_b - 1, 1)
                     vertex_keys_a = segment_vertex_keys_by_keysec.get(
-                        str(feat_a[secondary_key_attr]),
+                        str(father_feat[secondary_key_attr]),
                         [],
                     )
                     vertex_keys_b = segment_vertex_keys_by_keysec.get(
-                        str(feat_b[secondary_key_attr]),
+                        str(mother_feat[secondary_key_attr]),
                         [],
                     )
                     pair_connections = SimpleConnectionJudge.solve_nearest_with_criteria(
                         geom_a,
                         geom_b,
-                        str(feat_a[secondary_key_attr]),
-                        str(feat_b[secondary_key_attr]),
+                        str(father_feat[secondary_key_attr]),
+                        str(mother_feat[secondary_key_attr]),
                         vertex_keys_a,
                         vertex_keys_b,
                     )
